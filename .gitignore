@@ -1,4 +1,7 @@
 .venv/
+.env.local
+.tunnel-client/
+tools/bin/
 __pycache__/
 exports/
 calories/

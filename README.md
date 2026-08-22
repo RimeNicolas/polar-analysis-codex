@@ -124,3 +124,13 @@ Or use the included launcher from the project directory:
 ```
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. Keep this terminal running, then use ChatGPT's Secure MCP Tunnel flow to make the local endpoint available to ChatGPT without exposing it publicly. Do not use `--host 0.0.0.0` or a public tunnel for this personal-health-data server.
+
+### Private ChatGPT tunnel
+
+After installing OpenAI's `tunnel-client` in `tools/bin/`, create a tunnel in [OpenAI Platform](https://platform.openai.com/settings/organization/tunnels), then run:
+
+```bash
+./start_polar_tunnel.sh tunnel_YOUR_ID
+```
+
+The launcher starts the Polar server on localhost, creates a local tunnel-client profile, checks it, and keeps the tunnel in the foreground. It reads the runtime OpenAI key only from the ignored `.env.local` file. Keep this command running while using the private developer-mode plugin in ChatGPT; no inbound port is opened and no Polar credential is exposed.
