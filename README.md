@@ -89,7 +89,7 @@ The AccessLink OAuth token must include the `training_sessions:read` scope. If t
 
 ## MCP server
 
-`polar_mcp_server.py` is a thin, local MCP layer over the existing OAuth and Polar retrieval code. It provides one read-only tool, `get_activities(from_date, to_date, features=None)`, returning activity rows as structured data instead of writing a CSV.
+`polar_mcp_server.py` is a thin, local MCP layer over the existing Polar retrieval code. It provides one read-only tool, `get_activities(from_date, to_date, features=None)`, returning activity rows as structured data instead of writing a CSV.
 
 Install the dependencies first, then use the MCP Inspector for local testing:
 
@@ -106,7 +106,22 @@ The server uses standard input/output by default, so a local MCP-capable host ca
 uv run --with "mcp[cli]" mcp run /home/nicolas/Documents/ChatGPT/polar-analysis-codex/polar_mcp_server.py
 ```
 
-The existing local OAuth files under `~/.config/polar-csv-exporter/` continue to provide the credential and refreshed token; the MCP server never exposes them as a tool result.
+### Development Polar OAuth connection
+
+The MCP server now uses a separate, server-side Polar OAuth store. It never accepts a Polar token as a tool parameter and never returns a token. Its SQLite database is outside the repository by default at `~/.local/share/polar-mcp/credentials.sqlite3`, with owner-only permissions. It has separate rows per application user, so it can later move to a hosted database without changing the tool code.
+
+Create the ignored `.env.local` file with your Polar app credentials and the exact public callback URL:
+
+```bash
+POLAR_CLIENT_ID=your-polar-client-id
+POLAR_CLIENT_SECRET=your-polar-client-secret
+POLAR_REDIRECT_URI=https://your-public-oauth-host.example/polar/callback
+POLAR_DEV_USER_ID=development-user
+```
+
+Register that exact `POLAR_REDIRECT_URI` in [Polar AccessLink Admin](https://admin.polaraccesslink.com/). Start the local MCP server, then ask the MCP client to call `get_activities`. Before Polar is connected, the result includes a safe `authorization_url`. Open it in a browser, approve Polar, and return to the client. Later calls use the stored refresh token automatically.
+
+`POLAR_DEV_USER_ID` is deliberately a development-only identity seam: all calls from this local development instance identify as that value. The database and OAuth state are per user, but a real multi-user deployment must replace `get_current_user_id()` with verified MCP/app identity before serving more than one person.
 
 ### ChatGPT connection
 
@@ -124,6 +139,37 @@ Or use the included launcher from the project directory:
 ```
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. Keep this terminal running, then use ChatGPT's Secure MCP Tunnel flow to make the local endpoint available to ChatGPT without exposing it publicly. Do not use `--host 0.0.0.0` or a public tunnel for this personal-health-data server.
+
+Polar sends its browser callback to a public HTTPS URL, which the Secure MCP Tunnel does not provide. To keep `/mcp` private, use the included callback-only proxy on a second localhost port:
+
+```bash
+./start_polar_oauth_callback_proxy.sh
+```
+
+Point a separate public HTTPS reverse tunnel **only** at `http://127.0.0.1:8081`, and use its `https://.../polar/callback` URL for `POLAR_REDIRECT_URI`. That proxy allows only `/polar/login` and `/polar/callback`; `/mcp` is not routed through it. Do not point a public tunnel directly at port 8000. The choice and setup of the HTTPS reverse-tunnel provider is intentionally left to you; the OpenAI Secure MCP Tunnel remains dedicated to the private MCP connection.
+
+For a temporary development callback URL, run the downloaded Cloudflare `cloudflared` client through the included launcher:
+
+```bash
+./start_polar_oauth_tunnel.sh
+```
+
+It prints a temporary `https://...trycloudflare.com` address. Set `POLAR_REDIRECT_URI` to that address plus `/polar/callback`, then register the exact value with Polar. A Quick Tunnel URL changes when the command stops; update `.env.local` and Polar's redirect setting before the next OAuth login. For a permanent address, configure a named Cloudflare Tunnel with a domain you control.
+
+### Use tmux during authorization
+
+Cloudflare Quick Tunnel URLs change each time they start, so use a first tmux session to start the OAuth callback tunnel, then update `POLAR_REDIRECT_URI` and Polar AccessLink Admin before starting the MCP tunnel in a second session:
+
+```bash
+tmux new -s polar-oauth
+./start_polar_oauth_tunnel.sh
+# Copy the URL, update configuration, then detach with Ctrl-b followed by d.
+
+tmux new -s polar-mcp
+./start_polar_tunnel.sh
+```
+
+Once Polar is connected, only `polar-mcp` is needed for normal activity queries. `POLAR_MCP_TUNNEL_ID` can be stored privately in `.env.local`, so `./start_polar_tunnel.sh` needs no argument. Detach with `Ctrl-b`, then `d`; rejoin with `tmux attach -t polar-mcp`; stop it with `tmux kill-session -t polar-mcp`.
 
 ### Private ChatGPT tunnel
 

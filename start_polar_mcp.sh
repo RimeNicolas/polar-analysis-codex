@@ -12,5 +12,10 @@ if [[ ! -x "$venv_python" ]]; then
 fi
 
 cd "$project_dir"
+if [[ -f "$project_dir/.env.local" ]]; then
+  set -a
+  source "$project_dir/.env.local"
+  set +a
+fi
 source "$project_dir/.venv/bin/activate"
 exec python polar_mcp_server.py --transport streamable-http --host 127.0.0.1 --port 8000 "$@"

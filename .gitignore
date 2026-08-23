@@ -2,6 +2,7 @@
 .env.local
 .tunnel-client/
 tools/bin/
+.polar-dev.sqlite3
 __pycache__/
 exports/
 calories/

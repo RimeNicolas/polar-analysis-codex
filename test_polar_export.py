@@ -3,9 +3,11 @@ import unittest
 from datetime import date
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import polar_account
 import polar_export
+import polar_mcp_oauth
 import polar_oauth
 import polar_service
 
@@ -89,6 +91,43 @@ class PolarExportTests(unittest.TestCase):
             polar_account.write_private_json(path, {"accountData": {"email": "private@example.com"}})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads(path.read_text()), {"accountData": {"email": "private@example.com"}})
+
+    def test_mcp_oauth_state_is_bound_to_one_user_and_single_use(self):
+        with TemporaryDirectory() as directory:
+            store = polar_mcp_oauth.SQLitePolarCredentialStore(polar_oauth.Path(directory) / "credentials.sqlite3")
+            state = store.create_state("user-a")
+            self.assertEqual(store.consume_state(state), "user-a")
+            self.assertIsNone(store.consume_state(state))
+
+    def test_mcp_oauth_credentials_are_isolated_per_user(self):
+        with TemporaryDirectory() as directory:
+            store = polar_mcp_oauth.SQLitePolarCredentialStore(polar_oauth.Path(directory) / "credentials.sqlite3")
+            store.save_credentials("user-a", {"access_token": "access-a", "refresh_token": "refresh-a", "expires_in": 3600})
+            store.save_credentials("user-b", {"access_token": "access-b", "refresh_token": "refresh-b", "expires_in": 3600})
+            self.assertEqual(store.load_credentials("user-a").access_token, "access-a")
+            self.assertEqual(store.load_credentials("user-b").access_token, "access-b")
+            self.assertIsNone(store.load_credentials("unknown"))
+
+    def test_mcp_oauth_authorization_url_includes_state_and_redirect(self):
+        with TemporaryDirectory() as directory:
+            store = polar_mcp_oauth.SQLitePolarCredentialStore(polar_oauth.Path(directory) / "credentials.sqlite3")
+            config = polar_mcp_oauth.PolarOAuthConfig("client-id", "client-secret", "https://example.test/polar/callback")
+            query = parse_qs(urlsplit(polar_mcp_oauth.authorization_url(config, store, "user-a")).query)
+            self.assertEqual(query["client_id"], ["client-id"])
+            self.assertEqual(query["redirect_uri"], [config.redirect_uri])
+            self.assertEqual(query["scope"], [polar_mcp_oauth.POLAR_SCOPE])
+            self.assertEqual(store.consume_state(query["state"][0]), "user-a")
+
+    @patch("polar_mcp_oauth.exchange_token")
+    def test_mcp_oauth_refreshes_expired_credentials(self, exchange_token: Mock):
+        with TemporaryDirectory() as directory:
+            store = polar_mcp_oauth.SQLitePolarCredentialStore(polar_oauth.Path(directory) / "credentials.sqlite3")
+            store.save_credentials("user-a", {"access_token": "expired", "refresh_token": "refresh-a", "expires_in": 0})
+            exchange_token.return_value = {"access_token": "fresh", "refresh_token": "refresh-b", "expires_in": 3600}
+            config = polar_mcp_oauth.PolarOAuthConfig("client-id", "client-secret", "https://example.test/polar/callback")
+            self.assertEqual(polar_mcp_oauth.get_valid_polar_access_token("user-a", config, store), "fresh")
+            self.assertEqual(store.load_credentials("user-a").access_token, "fresh")
+            self.assertEqual(exchange_token.call_args.args[1]["grant_type"], "refresh_token")
 
 if __name__ == "__main__":
     unittest.main()

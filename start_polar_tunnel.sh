@@ -18,12 +18,6 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
-tunnel_id="${1:-}"
-if [[ ! "$tunnel_id" =~ ^tunnel_[A-Za-z0-9]+$ ]]; then
-  usage
-  exit 1
-fi
-
 if [[ ! -x "$venv_python" ]]; then
   echo "Virtual environment not found. Install project dependencies first." >&2
   exit 1
@@ -45,6 +39,12 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 export CONTROL_PLANE_API_KEY="${CONTROL_PLANE_API_KEY:-$OPENAI_API_KEY}"
+
+tunnel_id="${1:-${POLAR_MCP_TUNNEL_ID:-}}"
+if [[ ! "$tunnel_id" =~ ^tunnel_[A-Za-z0-9]+$ ]]; then
+  usage
+  exit 1
+fi
 
 mkdir -p "$profile_dir"
 "$venv_python" "$project_dir/polar_mcp_server.py" \
