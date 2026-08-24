@@ -89,7 +89,77 @@ The AccessLink OAuth token must include the `training_sessions:read` scope. If t
 
 ## MCP server
 
-`polar_mcp_server.py` is a thin, local MCP layer over the existing Polar retrieval code. It provides one read-only tool, `get_activities(from_date, to_date, features=None)`, returning activity rows as structured data instead of writing a CSV.
+The MCP server provides one read-only tool,
+`get_activities(from_date, to_date, features=None)`, returning activity rows as
+structured data instead of writing a CSV. It can run locally through the
+private OpenAI Secure MCP Tunnel, or as an Auth0-protected service on Render.
+
+See [MCP_RUN_MODES.md](MCP_RUN_MODES.md) first: it shows exactly which command
+and configuration belong to local versus hosted use.
+
+### Choose how to use it with ChatGPT
+
+Choose **one** of these paths. They use the same Polar tool but different
+servers and token stores.
+
+#### Option A — run it from this Ubuntu laptop
+
+Use this for private development or to keep Polar credentials on the laptop.
+
+1. Install dependencies once:
+
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -r requirements.txt
+   cp .env.local.example .env.local
+   ```
+
+2. Edit `.env.local` with your Polar credentials, OpenAI runtime key, and
+   `POLAR_MCP_TUNNEL_ID`. This file is ignored by Git.
+3. Start the local server and private ChatGPT tunnel:
+
+   ```bash
+   cd ~/Documents/ChatGPT/polar-analysis-codex
+   ./start_local_mcp_tunnel.sh
+   ```
+
+4. Keep that command running. ChatGPT reaches your laptop through the private
+   OpenAI Secure MCP Tunnel. The local server stores Polar tokens in
+   `~/.local/share/polar-mcp/credentials.sqlite3`.
+
+For the first Polar connection (or after revoking it), start the separate
+callback tunnel with `./start_polar_oauth_tunnel.sh`, update
+`POLAR_REDIRECT_URI` in `.env.local` and Polar AccessLink Admin with the new
+callback URL, then authorize Polar in the browser. The callback tunnel is only
+needed during Polar authorization.
+
+#### Option B — use the hosted Render server
+
+Use this when ChatGPT should connect directly to the hosted service. Nothing
+needs to run on the Ubuntu laptop in normal day-to-day use.
+
+1. Create a Render Web Service from this repository and a Render PostgreSQL
+   database.
+2. In Render, set `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
+   `DATABASE_URL`, `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and
+   `POLAR_REDIRECT_URI`.
+3. In Auth0, create the `polar:activities:read` API permission, configure
+   default third-party user access for that permission, enable DCR and the
+   Resource Parameter Compatibility Profile, and promote the desired login
+   connection to domain level.
+4. In ChatGPT Developer Mode, create or update the app to use:
+
+   ```text
+   https://polar-mcp-nicolas.onrender.com/mcp
+   ```
+
+5. Let ChatGPT complete the Auth0 sign-in. On the first activity request,
+   follow the Polar authorization link and approve access.
+
+Render runs `hosted_mcp_server.py`, verifies Auth0 tokens, and stores each
+user's Polar access and refresh tokens in PostgreSQL. It does not use the
+OpenAI Secure MCP Tunnel. After a code change, push it to GitHub and allow
+Render to deploy the new commit.
 
 Install the dependencies first, then use the MCP Inspector for local testing:
 
@@ -97,20 +167,21 @@ Install the dependencies first, then use the MCP Inspector for local testing:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-mcp dev polar_mcp_server.py
+mcp dev local_mcp_server.py
 ```
 
 The server uses standard input/output by default, so a local MCP-capable host can launch it as a child process. A portable launch command is:
 
 ```bash
-uv run --with "mcp[cli]" mcp run /home/nicolas/Documents/ChatGPT/polar-analysis-codex/polar_mcp_server.py
+uv run --with "mcp[cli]" mcp run /home/nicolas/Documents/ChatGPT/polar-analysis-codex/local_mcp_server.py
 ```
 
-### Development Polar OAuth connection
+### Local-only Polar OAuth connection
 
 The MCP server now uses a separate, server-side Polar OAuth store. It never accepts a Polar token as a tool parameter and never returns a token. Its SQLite database is outside the repository by default at `~/.local/share/polar-mcp/credentials.sqlite3`, with owner-only permissions. It has separate rows per application user, so it can later move to a hosted database without changing the tool code.
 
-Create the ignored `.env.local` file with your Polar app credentials and the exact public callback URL:
+Create the ignored `.env.local` file from `.env.local.example`, then set your
+Polar app credentials and the exact temporary public callback URL:
 
 ```bash
 POLAR_CLIENT_ID=your-polar-client-id
@@ -123,30 +194,23 @@ Register that exact `POLAR_REDIRECT_URI` in [Polar AccessLink Admin](https://adm
 
 `POLAR_DEV_USER_ID` is deliberately a development-only identity seam: all calls from this local development instance identify as that value. The database and OAuth state are per user, but a real multi-user deployment must replace `get_current_user_id()` with verified MCP/app identity before serving more than one person.
 
-### ChatGPT connection
+### Local ChatGPT connection
 
 ChatGPT cannot connect directly to a local stdio server. For the ChatGPT Secure MCP Tunnel route, run this server in Streamable HTTP mode, bound only to your computer:
 
 ```bash
-source .venv/bin/activate
-python polar_mcp_server.py --transport streamable-http --host 127.0.0.1 --port 8000
-```
-
-Or use the included launcher from the project directory:
-
-```bash
-./start_polar_mcp.sh
+./start_local_mcp.sh
 ```
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. Keep this terminal running, then use ChatGPT's Secure MCP Tunnel flow to make the local endpoint available to ChatGPT without exposing it publicly. Do not use `--host 0.0.0.0` or a public tunnel for this personal-health-data server.
 
-### Public Auth0 + Render deployment
+### Hosted Render + Auth0 setup
 
 The local setup is single-user development only. For a public server, set `MCP_AUTH_MODE=auth0`; each MCP request must then have an Auth0 access token containing the `polar:activities:read` scope. The server verifies its issuer, audience, expiry, signature, and scope before it retrieves any Polar data. The verified Auth0 issuer and `sub` claim become the per-user credential key.
 
 Deploy using the included `Dockerfile` and `render.yaml`, with a Render PostgreSQL database. Set these Render secrets: `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `DATABASE_URL`, `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and `POLAR_REDIRECT_URI`. Use the stable public URL for both `MCP_PUBLIC_URL` and `AUTH0_AUDIENCE`; set Polar's callback to `https://your-host/polar/callback`.
 
-Auth0 must be configured as an OAuth 2.1 authorization server for the ChatGPT MCP client. In its API settings, create the `polar:activities:read` permission and use your MCP public URL as the API identifier/audience. In the ChatGPT app setup, copy the exact ChatGPT callback URL into the Auth0 application's Allowed Callback URLs. The MCP SDK exposes the required protected-resource metadata at `/.well-known/oauth-protected-resource` when public mode is enabled. Do not deploy until these values and the OAuth flow have been tested end to end.
+Auth0 must be configured as an OAuth 2.1 authorization server for the ChatGPT MCP client. In its API settings, create the `polar:activities:read` permission and use your MCP public URL as the API identifier/audience. Enable Dynamic Client Registration (DCR), set `polar:activities:read` as the default user-delegated permission for third-party apps, enable the Resource Parameter Compatibility Profile, and promote the selected login connection to domain level. The MCP SDK exposes the required protected-resource metadata at `/.well-known/oauth-protected-resource` when public mode is enabled. Do not deploy until these values and the OAuth flow have been tested end to end.
 
 Polar sends its browser callback to a public HTTPS URL, which the Secure MCP Tunnel does not provide. To keep `/mcp` private, use the included callback-only proxy on a second localhost port:
 
@@ -174,17 +238,17 @@ tmux new -s polar-oauth
 # Copy the URL, update configuration, then detach with Ctrl-b followed by d.
 
 tmux new -s polar-mcp
-./start_polar_tunnel.sh
+./start_local_mcp_tunnel.sh
 ```
 
-Once Polar is connected, only `polar-mcp` is needed for normal activity queries. `POLAR_MCP_TUNNEL_ID` can be stored privately in `.env.local`, so `./start_polar_tunnel.sh` needs no argument. Detach with `Ctrl-b`, then `d`; rejoin with `tmux attach -t polar-mcp`; stop it with `tmux kill-session -t polar-mcp`.
+Once Polar is connected, only `polar-mcp` is needed for normal activity queries. `POLAR_MCP_TUNNEL_ID` can be stored privately in `.env.local`, so `./start_local_mcp_tunnel.sh` needs no argument. Detach with `Ctrl-b`, then `d`; rejoin with `tmux attach -t polar-mcp`; stop it with `tmux kill-session -t polar-mcp`.
 
 ### Private ChatGPT tunnel
 
 After installing OpenAI's `tunnel-client` in `tools/bin/`, create a tunnel in [OpenAI Platform](https://platform.openai.com/settings/organization/tunnels), then run:
 
 ```bash
-./start_polar_tunnel.sh tunnel_YOUR_ID
+./start_local_mcp_tunnel.sh tunnel_YOUR_ID
 ```
 
 The launcher starts the Polar server on localhost, creates a local tunnel-client profile, checks it, and keeps the tunnel in the foreground. It reads the runtime OpenAI key only from the ignored `.env.local` file. Keep this command running while using the private developer-mode plugin in ChatGPT; no inbound port is opened and no Polar credential is exposed.

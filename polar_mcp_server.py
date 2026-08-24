@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Local MCP server exposing Polar activities through a single read-only tool."""
+"""Shared Polar MCP application.
+
+Use ``local_mcp_server.py`` for a personal localhost server and
+``hosted_mcp_server.py`` for the Auth0-protected Render deployment. This file
+contains the shared MCP tools and Polar callback routes only.
+"""
 
 from __future__ import annotations
 
@@ -129,7 +134,7 @@ def main() -> None:
         "--transport",
         choices=("stdio", "streamable-http"),
         default="stdio",
-        help="stdio for local MCP hosts; streamable-http for a Secure MCP Tunnel",
+        help="Compatibility entry point. Prefer local_mcp_server.py or hosted_mcp_server.py.",
     )
     parser.add_argument("--host", default=os.environ.get("MCP_HOST", "127.0.0.1"), help="HTTP bind address (localhost by default)")
     parser.add_argument("--port", default=int(os.environ.get("PORT", "8000")), type=int, help="HTTP port for streamable-http")
