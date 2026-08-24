@@ -1,2 +1,4 @@
 requests>=2.31,<3
 mcp[cli]>=2,<3
+PyJWT[crypto]>=2.10,<3
+psycopg[binary]>=3.2,<4

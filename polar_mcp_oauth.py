@@ -184,11 +184,93 @@ class SQLitePolarCredentialStore:
             )
 
 
+class PostgresPolarCredentialStore:
+    """Production credential store backed by a managed PostgreSQL database."""
+
+    def __init__(self, database_url: str):
+        import psycopg
+
+        self.database_url = database_url
+        self._psycopg = psycopg
+        self._initialize()
+
+    def _connect(self):
+        return self._psycopg.connect(self.database_url, row_factory=self._psycopg.rows.dict_row)
+
+    def _initialize(self) -> None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, created_at BIGINT NOT NULL);
+                CREATE TABLE IF NOT EXISTS polar_credentials (
+                    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, expires_at BIGINT NOT NULL,
+                    scope TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS oauth_states (
+                    state TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    expires_at BIGINT NOT NULL
+                );
+                """
+            )
+
+    @staticmethod
+    def _ensure_user(cursor: Any, user_id: str, now: int) -> None:
+        cursor.execute("INSERT INTO users (id, created_at) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING", (user_id, now))
+
+    def create_state(self, user_id: str) -> str:
+        state, now = secrets.token_urlsafe(32), int(time.time())
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._ensure_user(cursor, user_id, now)
+            cursor.execute("DELETE FROM oauth_states WHERE expires_at <= %s", (now,))
+            cursor.execute("INSERT INTO oauth_states (state, user_id, expires_at) VALUES (%s, %s, %s)", (state, user_id, now + STATE_TTL_SECONDS))
+        return state
+
+    def consume_state(self, state: str) -> str | None:
+        now = int(time.time())
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("DELETE FROM oauth_states WHERE state = %s RETURNING user_id, expires_at", (state,))
+            row = cursor.fetchone()
+        if row is None or int(row["expires_at"]) <= now:
+            return None
+        return str(row["user_id"])
+
+    def load_credentials(self, user_id: str) -> PolarCredentials | None:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT access_token, refresh_token, expires_at, scope FROM polar_credentials WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+        return None if row is None else PolarCredentials(str(row["access_token"]), str(row["refresh_token"]), int(row["expires_at"]), str(row["scope"]))
+
+    def save_credentials(self, user_id: str, token: dict[str, Any]) -> None:
+        access_token, refresh_token = token.get("access_token"), token.get("refresh_token")
+        if not isinstance(access_token, str) or not access_token or not isinstance(refresh_token, str) or not refresh_token:
+            raise PolarOAuthError("Polar did not return the required credentials.")
+        now, expires_at, scope = int(time.time()), int(time.time()) + int(token.get("expires_in", 0)), str(token.get("scope", POLAR_SCOPE))
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._ensure_user(cursor, user_id, now)
+            cursor.execute(
+                """INSERT INTO polar_credentials (user_id, access_token, refresh_token, expires_at, scope, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token,
+                expires_at = EXCLUDED.expires_at, scope = EXCLUDED.scope, updated_at = EXCLUDED.updated_at""",
+                (user_id, access_token, refresh_token, expires_at, scope, now, now),
+            )
+
+
 def default_store_path() -> Path:
     configured = os.environ.get("POLAR_TOKEN_STORE", "").strip()
     if configured:
         return Path(configured).expanduser()
     return Path.home() / ".local" / "share" / "polar-mcp" / "credentials.sqlite3"
+
+
+def credential_store_from_environment() -> PolarCredentialStore:
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if database_url:
+        return PostgresPolarCredentialStore(database_url)
+    if os.environ.get("MCP_AUTH_MODE", "development").strip().lower() == "auth0":
+        raise PolarOAuthError("Public mode requires DATABASE_URL for persistent per-user Polar credentials.")
+    return SQLitePolarCredentialStore(default_store_path())
 
 
 def authorization_url(config: PolarOAuthConfig, store: PolarCredentialStore, user_id: str) -> str:

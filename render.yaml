@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: polar-mcp
+    runtime: docker
+    healthCheckPath: /mcp
+    envVars:
+      - key: MCP_AUTH_MODE
+        value: auth0
+      - key: MCP_PUBLIC_URL
+        sync: false
+      - key: AUTH0_DOMAIN
+        sync: false
+      - key: AUTH0_AUDIENCE
+        sync: false
+      - key: POLAR_CLIENT_ID
+        sync: false
+      - key: POLAR_CLIENT_SECRET
+        sync: false
+      - key: POLAR_REDIRECT_URI
+        sync: false
+      - key: DATABASE_URL
+        sync: false

@@ -8,45 +8,61 @@ import os
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.auth.middleware.auth_context import get_access_token
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from polar_mcp_auth import MCPAuthenticationError, auth0_settings_from_environment, authenticated_user_id
 from polar_mcp_oauth import (
     PolarNotConnectedError,
     PolarOAuthConfig,
     PolarOAuthError,
-    SQLitePolarCredentialStore,
-    authorization_start_url,
     authorization_url,
-    default_store_path,
+    credential_store_from_environment,
     exchange_token,
     get_valid_polar_access_token,
 )
 from polar_service import get_activities_for_token
 
 
+def public_auth_enabled() -> bool:
+    return os.environ.get("MCP_AUTH_MODE", "development").strip().lower() == "auth0"
+
+
+def mcp_auth_options() -> dict[str, Any]:
+    if not public_auth_enabled():
+        return {}
+    auth, verifier = auth0_settings_from_environment()
+    return {"auth": auth, "token_verifier": verifier}
+
+
 mcp = MCPServer(
     "Polar Activities",
     instructions="This server is read-only. Use get_activities for a date range. If Polar is not connected, ask the user to open the returned authorization_url.",
+    **mcp_auth_options(),
 )
 
 
 def get_current_user_id(_: Request | None = None) -> str:
-    """Development-only identity seam; replace with verified MCP/app identity in production."""
+    """Return a verified MCP user in public mode, or one local user in development."""
+    if public_auth_enabled():
+        return authenticated_user_id(get_access_token())
     return os.environ.get("POLAR_DEV_USER_ID", "development-user").strip() or "development-user"
 
 
-def oauth_dependencies() -> tuple[PolarOAuthConfig, SQLitePolarCredentialStore]:
-    return PolarOAuthConfig.from_environment(), SQLitePolarCredentialStore(default_store_path())
+def oauth_dependencies() -> tuple[PolarOAuthConfig, Any]:
+    return PolarOAuthConfig.from_environment(), credential_store_from_environment()
 
 
-def authorization_required_response() -> dict[str, str]:
+def authorization_required_response(user_id: str) -> dict[str, str]:
     try:
-        config, _ = oauth_dependencies()
+        config, store = oauth_dependencies()
         return {
             "error": "polar_not_connected",
             "message": "Connect your Polar account before using this tool.",
-            "authorization_url": authorization_start_url(config),
+            # State is created while the MCP bearer token is present. The
+            # browser callback does not need, and never receives, that token.
+            "authorization_url": authorization_url(config, store, user_id),
         }
     except PolarOAuthError as error:
         return {"error": "polar_configuration_missing", "message": str(error)}
@@ -65,10 +81,14 @@ def get_activities(
     features empty for summary-only data; omit it for standard details.
     """
     try:
+        user_id = get_current_user_id()
+    except MCPAuthenticationError as error:
+        return {"error": "mcp_authentication_error", "message": str(error)}
+    try:
         config, store = oauth_dependencies()
-        token = get_valid_polar_access_token(get_current_user_id(), config, store)
+        token = get_valid_polar_access_token(user_id, config, store)
     except PolarNotConnectedError:
-        return authorization_required_response()
+        return authorization_required_response(user_id)
     except PolarOAuthError as error:
         return {"error": "polar_authorization_error", "message": str(error)}
     return get_activities_for_token(from_date, to_date, token, features)
@@ -76,6 +96,8 @@ def get_activities(
 
 @mcp.custom_route("/polar/login", methods=["GET"], name="polar_login")
 async def polar_login(request: Request) -> RedirectResponse | HTMLResponse:
+    if public_auth_enabled():
+        return HTMLResponse("<h1>Use the authorization link returned by the MCP tool.</h1>", status_code=400)
     try:
         config, store = oauth_dependencies()
         return RedirectResponse(authorization_url(config, store, get_current_user_id(request)), status_code=302)
@@ -109,8 +131,8 @@ def main() -> None:
         default="stdio",
         help="stdio for local MCP hosts; streamable-http for a Secure MCP Tunnel",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="HTTP bind address (localhost by default)")
-    parser.add_argument("--port", default=8000, type=int, help="HTTP port for streamable-http")
+    parser.add_argument("--host", default=os.environ.get("MCP_HOST", "127.0.0.1"), help="HTTP bind address (localhost by default)")
+    parser.add_argument("--port", default=int(os.environ.get("PORT", "8000")), type=int, help="HTTP port for streamable-http")
     args = parser.parse_args()
     if args.transport == "stdio":
         mcp.run()

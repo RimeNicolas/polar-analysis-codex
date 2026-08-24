@@ -140,6 +140,14 @@ Or use the included launcher from the project directory:
 
 The MCP endpoint is `http://127.0.0.1:8000/mcp`. Keep this terminal running, then use ChatGPT's Secure MCP Tunnel flow to make the local endpoint available to ChatGPT without exposing it publicly. Do not use `--host 0.0.0.0` or a public tunnel for this personal-health-data server.
 
+### Public Auth0 + Render deployment
+
+The local setup is single-user development only. For a public server, set `MCP_AUTH_MODE=auth0`; each MCP request must then have an Auth0 access token containing the `polar:activities:read` scope. The server verifies its issuer, audience, expiry, signature, and scope before it retrieves any Polar data. The verified Auth0 issuer and `sub` claim become the per-user credential key.
+
+Deploy using the included `Dockerfile` and `render.yaml`, with a Render PostgreSQL database. Set these Render secrets: `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `DATABASE_URL`, `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and `POLAR_REDIRECT_URI`. Use the stable public URL for both `MCP_PUBLIC_URL` and `AUTH0_AUDIENCE`; set Polar's callback to `https://your-host/polar/callback`.
+
+Auth0 must be configured as an OAuth 2.1 authorization server for the ChatGPT MCP client. In its API settings, create the `polar:activities:read` permission and use your MCP public URL as the API identifier/audience. In the ChatGPT app setup, copy the exact ChatGPT callback URL into the Auth0 application's Allowed Callback URLs. The MCP SDK exposes the required protected-resource metadata at `/.well-known/oauth-protected-resource` when public mode is enabled. Do not deploy until these values and the OAuth flow have been tested end to end.
+
 Polar sends its browser callback to a public HTTPS URL, which the Secure MCP Tunnel does not provide. To keep `/mcp` private, use the included callback-only proxy on a second localhost port:
 
 ```bash
