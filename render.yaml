@@ -2,6 +2,7 @@ services:
   - type: web
     name: polar-mcp
     runtime: docker
+    plan: free
     healthCheckPath: /mcp
     envVars:
       - key: MCP_AUTH_MODE
