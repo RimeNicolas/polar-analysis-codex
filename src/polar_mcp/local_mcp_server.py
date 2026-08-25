@@ -20,12 +20,12 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.transport == "streamable-http" and args.host not in {"127.0.0.1", "localhost"}:
-        raise SystemExit("Local MCP must bind to 127.0.0.1 or localhost. Use hosted_mcp_server.py for Render.")
+        raise SystemExit("Local MCP must bind to 127.0.0.1 or localhost. Use python -m polar_mcp.hosted_mcp_server for Render.")
 
     # Set this before importing the shared app, which chooses its auth and
     # credential-store implementation during initialization.
     os.environ["MCP_AUTH_MODE"] = "development"
-    from polar_mcp_server import mcp
+    from .polar_mcp_server import mcp
 
     if args.transport == "stdio":
         mcp.run()

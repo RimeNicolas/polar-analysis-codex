@@ -2,7 +2,7 @@
 # Start the OAuth-only localhost proxy and a temporary Cloudflare HTTPS tunnel.
 set -euo pipefail
 
-project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 venv_python="$project_dir/.venv/bin/python"
 cloudflared="$project_dir/tools/bin/cloudflared"
 
@@ -11,7 +11,8 @@ if [[ ! -x "$venv_python" || ! -x "$cloudflared" ]]; then
   exit 1
 fi
 
-"$venv_python" "$project_dir/polar_oauth_callback_proxy.py" --host 127.0.0.1 --port 8081 &
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+"$venv_python" -m polar_mcp.polar_oauth_callback_proxy --host 127.0.0.1 --port 8081 &
 proxy_pid=$!
 
 cleanup() {

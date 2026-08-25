@@ -2,7 +2,7 @@
 # Start the personal localhost MCP server. Use this for local development.
 set -euo pipefail
 
-project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 venv_python="$project_dir/.venv/bin/python"
 
 if [[ ! -x "$venv_python" ]]; then
@@ -16,5 +16,6 @@ if [[ -f "$project_dir/.env.local" ]]; then
   set +a
 fi
 
-exec "$venv_python" "$project_dir/local_mcp_server.py" \
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$venv_python" -m polar_mcp.local_mcp_server \
   --transport streamable-http --host 127.0.0.1 --port 8000 "$@"

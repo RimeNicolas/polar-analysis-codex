@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 import requests
 
-from polar_oauth import get_access_token
+from .polar_oauth import get_access_token
 
 
 API_URL = "https://www.polaraccesslink.com/v4/data/training-sessions/list"
@@ -96,7 +96,7 @@ def get_sport_names(token: str, timeout: int) -> dict[str, str]:
         response.raise_for_status()
     except requests.HTTPError as error:
         raise RuntimeError(
-            "Could not load Polar sport names. Run 'python polar_oauth.py reauthorize' "
+            "Could not load Polar sport names. Run 'python -m polar_mcp.polar_oauth reauthorize' "
             "to grant the new sports:read permission."
         ) from error
     body = response.json()

@@ -7,3 +7,4 @@ __pycache__/
 exports/
 calories/
 *.pyc
+*.egg-info/

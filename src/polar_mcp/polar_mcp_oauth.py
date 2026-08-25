@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -68,6 +69,28 @@ class PolarCredentials:
     scope: str
 
 
+@dataclass(frozen=True)
+class MCPUsageMetrics:
+    """Aggregated, non-identifying hosted MCP usage metrics."""
+
+    from_date: str
+    to_date: str
+    activity_requests: int
+    unique_requesting_users: int
+    new_polar_connections: int
+    total_polar_connected_users: int
+
+    def as_dict(self) -> dict[str, int | str]:
+        return {
+            "from_date": self.from_date,
+            "to_date": self.to_date,
+            "activity_requests": self.activity_requests,
+            "unique_requesting_users": self.unique_requesting_users,
+            "new_polar_connections": self.new_polar_connections,
+            "total_polar_connected_users": self.total_polar_connected_users,
+        }
+
+
 class PolarCredentialStore(Protocol):
     def create_state(self, user_id: str) -> str: ...
 
@@ -76,6 +99,24 @@ class PolarCredentialStore(Protocol):
     def load_credentials(self, user_id: str) -> PolarCredentials | None: ...
 
     def save_credentials(self, user_id: str, token: dict[str, Any]) -> None: ...
+
+    def record_activity_request(self, user_id: str, requested_at: int | None = None) -> None: ...
+
+    def usage_metrics(self, from_date: str, to_date: str) -> MCPUsageMetrics: ...
+
+
+def usage_range(from_date: str, to_date: str) -> tuple[date, date, int, int]:
+    """Parse an inclusive ISO date range and return UTC epoch boundaries."""
+    try:
+        start_date = date.fromisoformat(from_date)
+        end_date = date.fromisoformat(to_date)
+    except ValueError as error:
+        raise PolarOAuthError("Metrics dates must use YYYY-MM-DD format.") from error
+    if end_date < start_date:
+        raise PolarOAuthError("Metrics to_date must be on or after from_date.")
+    start = int(datetime.combine(start_date, datetime_time.min, tzinfo=timezone.utc).timestamp())
+    end_exclusive = int(datetime.combine(end_date + timedelta(days=1), datetime_time.min, tzinfo=timezone.utc).timestamp())
+    return start_date, end_date, start, end_exclusive
 
 
 class SQLitePolarCredentialStore:
@@ -117,6 +158,13 @@ class SQLitePolarCredentialStore:
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     expires_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS mcp_activity_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    requested_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS mcp_activity_requests_requested_at_idx
+                    ON mcp_activity_requests (requested_at);
                 """
             )
         try:
@@ -183,6 +231,33 @@ class SQLitePolarCredentialStore:
                 (user_id, access_token, refresh_token, expires_at, scope, now, now),
             )
 
+    def record_activity_request(self, user_id: str, requested_at: int | None = None) -> None:
+        now = int(time.time()) if requested_at is None else requested_at
+        with self._connect() as connection:
+            self._ensure_user(connection, user_id, now)
+            connection.execute("INSERT INTO mcp_activity_requests (user_id, requested_at) VALUES (?, ?)", (user_id, now))
+
+    def usage_metrics(self, from_date: str, to_date: str) -> MCPUsageMetrics:
+        start_date, end_date, start, end_exclusive = usage_range(from_date, to_date)
+        with self._connect() as connection:
+            usage = connection.execute(
+                """SELECT COUNT(*) AS activity_requests, COUNT(DISTINCT user_id) AS unique_requesting_users
+                FROM mcp_activity_requests WHERE requested_at >= ? AND requested_at < ?""",
+                (start, end_exclusive),
+            ).fetchone()
+            new_connections = connection.execute(
+                "SELECT COUNT(*) AS count FROM polar_credentials WHERE created_at >= ? AND created_at < ?", (start, end_exclusive)
+            ).fetchone()
+            total_connections = connection.execute("SELECT COUNT(*) AS count FROM polar_credentials").fetchone()
+        return MCPUsageMetrics(
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+            activity_requests=int(usage["activity_requests"]),
+            unique_requesting_users=int(usage["unique_requesting_users"]),
+            new_polar_connections=int(new_connections["count"]),
+            total_polar_connected_users=int(total_connections["count"]),
+        )
+
 
 class PostgresPolarCredentialStore:
     """Production credential store backed by a managed PostgreSQL database."""
@@ -211,6 +286,13 @@ class PostgresPolarCredentialStore:
                     state TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     expires_at BIGINT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS mcp_activity_requests (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    requested_at BIGINT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS mcp_activity_requests_requested_at_idx
+                    ON mcp_activity_requests (requested_at);
                 """
             )
 
@@ -255,6 +337,34 @@ class PostgresPolarCredentialStore:
                 expires_at = EXCLUDED.expires_at, scope = EXCLUDED.scope, updated_at = EXCLUDED.updated_at""",
                 (user_id, access_token, refresh_token, expires_at, scope, now, now),
             )
+
+    def record_activity_request(self, user_id: str, requested_at: int | None = None) -> None:
+        now = int(time.time()) if requested_at is None else requested_at
+        with self._connect() as connection, connection.cursor() as cursor:
+            self._ensure_user(cursor, user_id, now)
+            cursor.execute("INSERT INTO mcp_activity_requests (user_id, requested_at) VALUES (%s, %s)", (user_id, now))
+
+    def usage_metrics(self, from_date: str, to_date: str) -> MCPUsageMetrics:
+        start_date, end_date, start, end_exclusive = usage_range(from_date, to_date)
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT COUNT(*) AS activity_requests, COUNT(DISTINCT user_id) AS unique_requesting_users
+                FROM mcp_activity_requests WHERE requested_at >= %s AND requested_at < %s""",
+                (start, end_exclusive),
+            )
+            usage = cursor.fetchone()
+            cursor.execute("SELECT COUNT(*) AS count FROM polar_credentials WHERE created_at >= %s AND created_at < %s", (start, end_exclusive))
+            new_connections = cursor.fetchone()
+            cursor.execute("SELECT COUNT(*) AS count FROM polar_credentials")
+            total_connections = cursor.fetchone()
+        return MCPUsageMetrics(
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+            activity_requests=int(usage["activity_requests"]),
+            unique_requesting_users=int(usage["unique_requesting_users"]),
+            new_polar_connections=int(new_connections["count"]),
+            total_polar_connected_users=int(total_connections["count"]),
+        )
 
 
 def default_store_path() -> Path:

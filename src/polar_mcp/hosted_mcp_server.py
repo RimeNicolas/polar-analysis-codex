@@ -20,7 +20,7 @@ def main() -> None:
     # Set this before importing the shared app, which constructs Auth0's
     # protected-resource metadata and token verifier during initialization.
     os.environ["MCP_AUTH_MODE"] = "auth0"
-    from polar_mcp_server import mcp
+    from .polar_mcp_server import mcp
 
     mcp.run("streamable-http", host=args.host, port=args.port)
 

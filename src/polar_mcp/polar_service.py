@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from polar_export import DEFAULT_FEATURES, date_ranges, export_row, get_sessions, get_sport_names, load_token
+from .polar_export import DEFAULT_FEATURES, date_ranges, export_row, get_sessions, get_sport_names, load_token
 
 
 def parse_iso_date(value: str, parameter: str) -> date:

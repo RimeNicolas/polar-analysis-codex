@@ -18,6 +18,7 @@ from mcp.server.auth.settings import AuthSettings
 
 
 MCP_SCOPE = "polar:activities:read"
+DEFAULT_ADMIN_ROLE = "polar-mcp-admin"
 
 
 class MCPAuthenticationError(RuntimeError):
@@ -29,6 +30,8 @@ class Auth0Config:
     issuer: str
     audience: str
     resource_server_url: str
+    roles_claim: str
+    admin_role: str
 
     @classmethod
     def from_environment(cls) -> "Auth0Config":
@@ -44,7 +47,17 @@ class Auth0Config:
             parsed = urlsplit(value)
             if parsed.scheme != "https" or not parsed.netloc:
                 raise MCPAuthenticationError(f"{name} must be a public HTTPS URL.")
-        return cls(issuer=issuer, audience=audience, resource_server_url=resource_server_url)
+        roles_claim = os.environ.get("AUTH0_ROLES_CLAIM", f"{resource_server_url}/roles").strip()
+        admin_role = os.environ.get("AUTH0_ADMIN_ROLE", DEFAULT_ADMIN_ROLE).strip()
+        if not roles_claim or not admin_role:
+            raise MCPAuthenticationError("AUTH0_ROLES_CLAIM and AUTH0_ADMIN_ROLE cannot be empty.")
+        return cls(
+            issuer=issuer,
+            audience=audience,
+            resource_server_url=resource_server_url,
+            roles_claim=roles_claim,
+            admin_role=admin_role,
+        )
 
 
 class Auth0TokenVerifier(TokenVerifier):
@@ -68,6 +81,8 @@ class Auth0TokenVerifier(TokenVerifier):
             subject = claims.get("sub")
             if MCP_SCOPE not in scopes or not isinstance(subject, str) or not subject:
                 return None
+            raw_roles = claims.get(self.config.roles_claim, [])
+            roles = [role for role in raw_roles if isinstance(role, str)] if isinstance(raw_roles, list) else []
             return AccessToken(
                 token=token,
                 client_id=str(claims.get("azp") or claims.get("client_id") or "chatgpt"),
@@ -75,7 +90,7 @@ class Auth0TokenVerifier(TokenVerifier):
                 expires_at=int(claims["exp"]),
                 resource=self.config.audience,
                 subject=subject,
-                claims={"iss": self.config.issuer},
+                claims={"iss": self.config.issuer, "roles": roles},
             )
         except (jwt.PyJWTError, KeyError, TypeError, ValueError):
             return None
@@ -101,3 +116,11 @@ def authenticated_user_id(access_token: AccessToken | None) -> str:
     if not issuer:
         raise MCPAuthenticationError("The access token is missing its issuer.")
     return f"{issuer}|{access_token.subject}"
+
+
+def is_admin(access_token: AccessToken | None, admin_role: str) -> bool:
+    """Return whether a verified token carries the configured Auth0 admin role."""
+    if access_token is None:
+        return False
+    roles = (access_token.claims or {}).get("roles", [])
+    return isinstance(roles, list) and admin_role in roles

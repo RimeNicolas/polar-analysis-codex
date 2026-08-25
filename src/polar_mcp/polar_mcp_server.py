@@ -17,8 +17,8 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
-from polar_mcp_auth import MCPAuthenticationError, auth0_settings_from_environment, authenticated_user_id
-from polar_mcp_oauth import (
+from .polar_mcp_auth import MCPAuthenticationError, auth0_settings_from_environment, authenticated_user_id, is_admin
+from .polar_mcp_oauth import (
     PolarNotConnectedError,
     PolarOAuthConfig,
     PolarOAuthError,
@@ -27,7 +27,7 @@ from polar_mcp_oauth import (
     exchange_token,
     get_valid_polar_access_token,
 )
-from polar_service import get_activities_for_token
+from .polar_service import get_activities_for_token
 
 
 def public_auth_enabled() -> bool:
@@ -53,6 +53,14 @@ def get_current_user_id(_: Request | None = None) -> str:
     if public_auth_enabled():
         return authenticated_user_id(get_access_token())
     return os.environ.get("POLAR_DEV_USER_ID", "development-user").strip() or "development-user"
+
+
+def current_user_is_admin() -> bool:
+    """Return whether the current public MCP request has the Auth0 admin role."""
+    if not public_auth_enabled():
+        return False
+    _, verifier = auth0_settings_from_environment()
+    return is_admin(get_access_token(), verifier.config.admin_role)
 
 
 def oauth_dependencies() -> tuple[PolarOAuthConfig, Any]:
@@ -91,12 +99,32 @@ def get_activities(
         return {"error": "mcp_authentication_error", "message": str(error)}
     try:
         config, store = oauth_dependencies()
+        store.record_activity_request(user_id)
         token = get_valid_polar_access_token(user_id, config, store)
     except PolarNotConnectedError:
         return authorization_required_response(user_id)
     except PolarOAuthError as error:
         return {"error": "polar_authorization_error", "message": str(error)}
     return get_activities_for_token(from_date, to_date, token, features)
+
+
+@mcp.tool()
+def get_server_metrics(from_date: str, to_date: str) -> dict[str, Any]:
+    """Retrieve aggregate hosted MCP usage metrics for an inclusive YYYY-MM-DD date range.
+
+    Use only for service administration. Requires the Auth0 `polar-mcp-admin`
+    role (or the configured AUTH0_ADMIN_ROLE); returns no user identities,
+    Polar tokens, or activity data.
+    """
+    if not public_auth_enabled():
+        return {"error": "admin_metrics_hosted_only", "message": "Server metrics are available only in the Auth0-protected hosted deployment."}
+    try:
+        if not current_user_is_admin():
+            return {"error": "admin_role_required", "message": "This tool requires the Auth0 administrator role."}
+        _, store = oauth_dependencies()
+        return store.usage_metrics(from_date, to_date).as_dict()
+    except (MCPAuthenticationError, PolarOAuthError) as error:
+        return {"error": "metrics_unavailable", "message": str(error)}
 
 
 @mcp.custom_route("/polar/login", methods=["GET"], name="polar_login")

@@ -2,7 +2,7 @@
 # Start the personal localhost MCP server and its private OpenAI Secure MCP Tunnel.
 set -euo pipefail
 
-project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 venv_python="$project_dir/.venv/bin/python"
 tunnel_client="$project_dir/tools/bin/tunnel-client"
 env_file="$project_dir/.env.local"
@@ -38,6 +38,7 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   exit 1
 fi
 export CONTROL_PLANE_API_KEY="${CONTROL_PLANE_API_KEY:-$OPENAI_API_KEY}"
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
 
 tunnel_id="${1:-${POLAR_MCP_TUNNEL_ID:-}}"
 if [[ ! "$tunnel_id" =~ ^tunnel_[A-Za-z0-9]+$ ]]; then
@@ -46,7 +47,7 @@ if [[ ! "$tunnel_id" =~ ^tunnel_[A-Za-z0-9]+$ ]]; then
 fi
 
 mkdir -p "$profile_dir"
-"$venv_python" "$project_dir/local_mcp_server.py" --transport streamable-http --host 127.0.0.1 --port 8000 &
+"$venv_python" -m polar_mcp.local_mcp_server --transport streamable-http --host 127.0.0.1 --port 8000 &
 polar_pid=$!
 
 cleanup() {

@@ -2,7 +2,7 @@
 # Start the localhost-only allow-list proxy for Polar OAuth browser callbacks.
 set -euo pipefail
 
-project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 venv_python="$project_dir/.venv/bin/python"
 
 if [[ ! -x "$venv_python" ]]; then
@@ -10,5 +10,5 @@ if [[ ! -x "$venv_python" ]]; then
   exit 1
 fi
 
-cd "$project_dir"
-exec "$venv_python" polar_oauth_callback_proxy.py "$@"
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$venv_python" -m polar_mcp.polar_oauth_callback_proxy "$@"

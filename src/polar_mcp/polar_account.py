@@ -12,7 +12,7 @@ from typing import Any
 
 import requests
 
-from polar_oauth import get_access_token
+from .polar_oauth import get_access_token
 
 ACCOUNT_URL = "https://www.polaraccesslink.com/v4/data/user/account-data"
 
@@ -30,7 +30,7 @@ def get_account_data(token: str, timeout: int = 30) -> dict[str, Any]:
         if response.status_code in {401, 403}:
             detail = (
                 "Authorization is missing or does not include profile:read. "
-                "Run 'python polar_oauth.py reauthorize' and approve access."
+                "Run 'python -m polar_mcp.polar_oauth reauthorize' and approve access."
             )
         else:
             detail = f"Polar API returned HTTP {response.status_code}."
