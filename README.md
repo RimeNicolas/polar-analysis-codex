@@ -249,7 +249,7 @@ needs to run on the Linux machine in normal day-to-day use.
 4. In ChatGPT Developer Mode, create or update the app to use:
 
    ```text
-   https://polar-mcp-nicolas.onrender.com/mcp
+   https://polar-mcp-xxx.onrender.com/mcp
    ```
 
 5. Let ChatGPT complete the Auth0 sign-in. On the first activity request,
@@ -294,7 +294,7 @@ running without PostgreSQL.
    exports.onExecutePostLogin = async (event, api) => {
      if (event.authorization) {
        api.accessToken.setCustomClaim(
-         'https://polar-mcp-nicolas.onrender.com/roles',
+         'https://polar-mcp-xxx.onrender.com/roles',
          event.authorization.roles
        );
      }
