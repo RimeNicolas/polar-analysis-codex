@@ -7,14 +7,13 @@ It supports two ways to run the same service:
 * **Hosted:** an Auth0-protected MCP endpoint on Render. It uses PostgreSQL when configured, or an ephemeral in-memory token store at no database cost.
 * **Local:** a private server on this Linux machine, optionally connected to ChatGPT through the OpenAI Secure MCP Tunnel; Polar tokens remain on the machine.
 
-The repository also includes a local command-line CSV exporter for loading activities into Excel. All Polar operations are read-only: the service never changes or removes data in Polar Flow.
+All Polar operations are read-only: the service never changes or removes data in Polar Flow.
 
 Start with [MCP_RUN_MODES.md](MCP_RUN_MODES.md) to choose between the local and hosted setup.
 
 ## Portfolio use case
 
-This project demonstrates a complete, privacy-conscious integration rather
-than only a CSV export:
+This project demonstrates a complete, privacy-conscious integration:
 
 > A secure, multi-user MCP service that lets an AI client retrieve a person's
 > Polar activity data through OAuth, without exposing Polar tokens to the
@@ -30,8 +29,8 @@ PostgreSQL storage or a no-cost in-memory mode that discards tokens on restart.
 1. A user signs in to the MCP service through Auth0, for example with Google.
 2. On their first activity request, they authorize their own Polar account.
 3. The AI client retrieves normalized Polar sessions through `get_activities`.
-4. `get_exercise_calories` groups exercise calories by day and sport, ready to
-   compare with food calories logged in a ChatGPT Nutrition project.
+4. An administrator with the Auth0 `polar-mcp-admin` role can retrieve aggregate
+   server metrics without seeing user identities, Polar tokens, or activity data.
 
 The current Polar `calories` field measures calories burned in recorded
 activities. It does not represent complete daily energy expenditure, which also
