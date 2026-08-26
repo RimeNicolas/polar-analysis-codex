@@ -1,6 +1,15 @@
-# Polar cycling CSV exporter
+# Polar Analysis MCP
 
-This command-line app downloads all Polar Flow training sessions in a date range and writes one Excel-friendly CSV row per session. It uses the current Polar AccessLink v4 training-session endpoint, so reading data does not commit or remove it.
+Polar Analysis MCP is a read-only [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) service for querying Polar Flow activities from ChatGPT or another MCP client. It connects each user to Polar through OAuth, retrieves their training sessions through Polar AccessLink, and returns structured activity data to the client.
+
+It supports two ways to run the same service:
+
+* **Hosted:** an Auth0-protected MCP endpoint on Render. It uses PostgreSQL when configured, or an ephemeral in-memory token store at no database cost.
+* **Local:** a private server on this Linux machine, optionally connected to ChatGPT through the OpenAI Secure MCP Tunnel; Polar tokens remain on the machine.
+
+The repository also includes a local command-line CSV exporter for loading activities into Excel. All Polar operations are read-only: the service never changes or removes data in Polar Flow.
+
+Start with [MCP_RUN_MODES.md](MCP_RUN_MODES.md) to choose between the local and hosted setup.
 
 ## Project layout
 
@@ -20,7 +29,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt -e .
 ```
 
-## One-time Polar authorization
+## Local CSV exporter: one-time Polar authorization
 
 The first export can guide you through authorization automatically. Before doing it, register `http://localhost:8080/callback` as a redirect URL for your client in [Polar AccessLink Admin](https://admin.polaraccesslink.com/). Then run:
 
@@ -122,9 +131,9 @@ and configuration belong to local versus hosted use.
 Choose **one** of these paths. They use the same Polar tool but different
 servers and token stores.
 
-#### Option A — run it from this Ubuntu laptop
+#### Option A — run it from this Linux machine
 
-Use this for private development or to keep Polar credentials on the laptop.
+Use this for private development or to keep Polar credentials on the machine.
 
 1. Install dependencies once:
 
@@ -143,7 +152,7 @@ Use this for private development or to keep Polar credentials on the laptop.
    ./scripts/start_local_mcp_tunnel.sh
    ```
 
-4. Keep that command running. ChatGPT reaches your laptop through the private
+4. Keep that command running. ChatGPT reaches your machine through the private
    OpenAI Secure MCP Tunnel. The local server stores Polar tokens in
    `~/.local/share/polar-mcp/credentials.sqlite3`.
 
@@ -156,12 +165,12 @@ needed during Polar authorization.
 #### Option B — use the hosted Render server
 
 Use this when ChatGPT should connect directly to the hosted service. Nothing
-needs to run on the Ubuntu laptop in normal day-to-day use.
+needs to run on the Linux machine in normal day-to-day use.
 
-1. Create a Render Web Service from this repository and a Render PostgreSQL
-   database.
+1. Create a Render Web Service from this repository. A Render PostgreSQL
+   database is optional.
 2. In Render, set `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
-   `DATABASE_URL`, `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and
+   `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and
    `POLAR_REDIRECT_URI`.
 3. In Auth0, create the `polar:activities:read` API permission, configure
    default third-party user access for that permission, enable DCR and the
@@ -176,10 +185,14 @@ needs to run on the Ubuntu laptop in normal day-to-day use.
 5. Let ChatGPT complete the Auth0 sign-in. On the first activity request,
    follow the Polar authorization link and approve access.
 
-Render runs `python -m polar_mcp.hosted_mcp_server`, verifies Auth0 tokens, and stores each
-user's Polar access and refresh tokens in PostgreSQL. It does not use the
-OpenAI Secure MCP Tunnel. After a code change, push it to GitHub and allow
-Render to deploy the new commit.
+Render runs `python -m polar_mcp.hosted_mcp_server` and verifies Auth0 tokens.
+If `DATABASE_URL` is set, each user's Polar access and refresh tokens are stored
+in PostgreSQL. If it is absent, they remain only in the running Render process:
+users must reconnect Polar after a restart, redeploy, or Render free-tier
+spin-down. The in-memory option has no database cost and does not write tokens
+to the container filesystem. The hosted service does not use the OpenAI Secure
+MCP Tunnel. After a code change, push it to GitHub and allow Render to deploy
+the new commit.
 
 ### Hosted admin metrics
 
@@ -196,7 +209,8 @@ is available from ChatGPT only to users assigned the Auth0 role
 
 No names, email addresses, activity data, or tokens are returned. Activity
 request counts begin only after this version is deployed; connection totals can
-include Polar accounts already stored in PostgreSQL.
+include Polar accounts stored since the current server process started when
+running without PostgreSQL.
 
 #### One-time Auth0 admin setup
 
@@ -275,7 +289,16 @@ The MCP endpoint is `http://127.0.0.1:8000/mcp`. Keep this terminal running, the
 
 The local setup is single-user development only. For a public server, set `MCP_AUTH_MODE=auth0`; each MCP request must then have an Auth0 access token containing the `polar:activities:read` scope. The server verifies its issuer, audience, expiry, signature, and scope before it retrieves any Polar data. The verified Auth0 issuer and `sub` claim become the per-user credential key.
 
-Deploy using the included `Dockerfile` and `render.yaml`, with a Render PostgreSQL database. Set these Render secrets: `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, `DATABASE_URL`, `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and `POLAR_REDIRECT_URI`. Use the stable public URL for both `MCP_PUBLIC_URL` and `AUTH0_AUDIENCE`; set Polar's callback to `https://your-host/polar/callback`.
+Deploy using the included `Dockerfile` and `render.yaml`. Set these Render
+secrets: `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
+`POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and `POLAR_REDIRECT_URI`. Use the
+stable public URL for both `MCP_PUBLIC_URL` and `AUTH0_AUDIENCE`; set Polar's
+callback to `https://your-host/polar/callback`.
+
+`DATABASE_URL` is optional. If set, the server uses PostgreSQL and retains each
+user's Polar credentials and usage metrics. If omitted, it uses memory only:
+credentials and metrics are discarded whenever Render restarts or redeploys,
+and users must authorize Polar again.
 
 Auth0 must be configured as an OAuth 2.1 authorization server for the ChatGPT MCP client. In its API settings, create the `polar:activities:read` permission and use your MCP public URL as the API identifier/audience. Enable Dynamic Client Registration (DCR), set `polar:activities:read` as the default user-delegated permission for third-party apps, enable the Resource Parameter Compatibility Profile, and promote the selected login connection to domain level. The MCP SDK exposes the required protected-resource metadata at `/.well-known/oauth-protected-resource` when public mode is enabled. Do not deploy until these values and the OAuth flow have been tested end to end.
 

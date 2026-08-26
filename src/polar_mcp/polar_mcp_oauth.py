@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
@@ -259,6 +260,75 @@ class SQLitePolarCredentialStore:
         )
 
 
+class InMemoryPolarCredentialStore:
+    """Ephemeral per-user store for a hosted server without PostgreSQL.
+
+    Credentials, OAuth state, and usage data exist only in this server process.
+    A Render restart or redeploy discards them, requiring each user to authorize
+    Polar again. This avoids writing credentials to the container filesystem.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._states: dict[str, tuple[str, int]] = {}
+        self._credentials: dict[str, tuple[PolarCredentials, int]] = {}
+        self._activity_requests: list[tuple[str, int]] = []
+
+    def create_state(self, user_id: str) -> str:
+        state, now = secrets.token_urlsafe(32), int(time.time())
+        with self._lock:
+            self._states = {value: entry for value, entry in self._states.items() if entry[1] > now}
+            self._states[state] = (user_id, now + STATE_TTL_SECONDS)
+        return state
+
+    def consume_state(self, state: str) -> str | None:
+        now = int(time.time())
+        with self._lock:
+            entry = self._states.pop(state, None)
+        if entry is None or entry[1] <= now:
+            return None
+        return entry[0]
+
+    def load_credentials(self, user_id: str) -> PolarCredentials | None:
+        with self._lock:
+            entry = self._credentials.get(user_id)
+        return None if entry is None else entry[0]
+
+    def save_credentials(self, user_id: str, token: dict[str, Any]) -> None:
+        access_token, refresh_token = token.get("access_token"), token.get("refresh_token")
+        if not isinstance(access_token, str) or not access_token or not isinstance(refresh_token, str) or not refresh_token:
+            raise PolarOAuthError("Polar did not return the required credentials.")
+        now = int(time.time())
+        credentials = PolarCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=now + int(token.get("expires_in", 0)),
+            scope=str(token.get("scope", POLAR_SCOPE)),
+        )
+        with self._lock:
+            created_at = self._credentials.get(user_id, (credentials, now))[1]
+            self._credentials[user_id] = (credentials, created_at)
+
+    def record_activity_request(self, user_id: str, requested_at: int | None = None) -> None:
+        with self._lock:
+            self._activity_requests.append((user_id, int(time.time()) if requested_at is None else requested_at))
+
+    def usage_metrics(self, from_date: str, to_date: str) -> MCPUsageMetrics:
+        start_date, end_date, start, end_exclusive = usage_range(from_date, to_date)
+        with self._lock:
+            requests_in_range = [user_id for user_id, requested_at in self._activity_requests if start <= requested_at < end_exclusive]
+            new_connections = sum(1 for _, created_at in self._credentials.values() if start <= created_at < end_exclusive)
+            total_connections = len(self._credentials)
+        return MCPUsageMetrics(
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+            activity_requests=len(requests_in_range),
+            unique_requesting_users=len(set(requests_in_range)),
+            new_polar_connections=new_connections,
+            total_polar_connected_users=total_connections,
+        )
+
+
 class PostgresPolarCredentialStore:
     """Production credential store backed by a managed PostgreSQL database."""
 
@@ -374,12 +444,18 @@ def default_store_path() -> Path:
     return Path.home() / ".local" / "share" / "polar-mcp" / "credentials.sqlite3"
 
 
+_in_memory_store: InMemoryPolarCredentialStore | None = None
+
+
 def credential_store_from_environment() -> PolarCredentialStore:
     database_url = os.environ.get("DATABASE_URL", "").strip()
     if database_url:
         return PostgresPolarCredentialStore(database_url)
     if os.environ.get("MCP_AUTH_MODE", "development").strip().lower() == "auth0":
-        raise PolarOAuthError("Public mode requires DATABASE_URL for persistent per-user Polar credentials.")
+        global _in_memory_store
+        if _in_memory_store is None:
+            _in_memory_store = InMemoryPolarCredentialStore()
+        return _in_memory_store
     return SQLitePolarCredentialStore(default_store_path())
 
 

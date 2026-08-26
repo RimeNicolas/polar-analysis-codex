@@ -109,6 +109,17 @@ class PolarExportTests(unittest.TestCase):
             self.assertEqual(store.load_credentials("user-b").access_token, "access-b")
             self.assertIsNone(store.load_credentials("unknown"))
 
+    def test_in_memory_mcp_store_keeps_data_within_one_server_process(self):
+        store = polar_mcp_oauth.InMemoryPolarCredentialStore()
+        state = store.create_state("user-a")
+        self.assertEqual(store.consume_state(state), "user-a")
+        store.save_credentials("user-a", {"access_token": "access-a", "refresh_token": "refresh-a", "expires_in": 3600})
+        store.record_activity_request("user-a")
+        self.assertEqual(store.load_credentials("user-a").access_token, "access-a")
+        metrics = store.usage_metrics(date.today().isoformat(), date.today().isoformat())
+        self.assertEqual(metrics.activity_requests, 1)
+        self.assertEqual(metrics.total_polar_connected_users, 1)
+
     def test_mcp_usage_metrics_count_requests_and_connected_users(self):
         with TemporaryDirectory() as directory:
             store = polar_mcp_oauth.SQLitePolarCredentialStore(polar_oauth.Path(directory) / "credentials.sqlite3")

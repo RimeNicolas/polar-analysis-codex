@@ -5,13 +5,13 @@ they are separate deployments, not two processes that need to run together.
 
 | Use case | Start command | Where it runs | Authentication and token store |
 | --- | --- | --- | --- |
-| Personal local development | `./scripts/start_local_mcp.sh` | This laptop, `127.0.0.1:8000` | One development user; private SQLite database on this laptop |
-| Personal ChatGPT connection through an OpenAI tunnel | `./scripts/start_local_mcp_tunnel.sh` | This laptop, reachable only through the Secure MCP Tunnel | Same local SQLite database; requires `.env.local` and the tunnel client |
-| Hosted ChatGPT app | Render runs `python -m polar_mcp.hosted_mcp_server` | Render, public HTTPS `/mcp` endpoint | Auth0 user access token plus Render PostgreSQL per-user Polar tokens |
+| Personal local development | `./scripts/start_local_mcp.sh` | This Linux machine, `127.0.0.1:8000` | One development user; private SQLite database on this machine |
+| Personal ChatGPT connection through an OpenAI tunnel | `./scripts/start_local_mcp_tunnel.sh` | This Linux machine, reachable only through the Secure MCP Tunnel | Same local SQLite database; requires `.env.local` and the tunnel client |
+| Hosted ChatGPT app | Render runs `python -m polar_mcp.hosted_mcp_server` | Render, public HTTPS `/mcp` endpoint | Auth0 user access token plus optional PostgreSQL; otherwise, in-memory Polar tokens until restart |
 
 ## Local mode
 
-Use local mode when you are developing on this laptop or prefer the private
+Use local mode when you are developing on this Linux machine or prefer the private
 OpenAI Secure MCP Tunnel.
 
 ```bash
@@ -20,7 +20,7 @@ OpenAI Secure MCP Tunnel.
 
 This runs `src/polar_mcp/local_mcp_server.py` in Streamable HTTP mode. It always selects
 `MCP_AUTH_MODE=development` and binds only to localhost. It reads local-only
-settings from `.env.local` and uses this laptop's SQLite file:
+settings from `.env.local` and uses this machine's SQLite file:
 
 ```text
 ~/.local/share/polar-mcp/credentials.sqlite3
@@ -56,22 +56,24 @@ Render's Docker image runs:
 python -m polar_mcp.hosted_mcp_server
 ```
 
-This entry point always selects `MCP_AUTH_MODE=auth0`. It expects its secrets
+This entry point always selects `MCP_AUTH_MODE=auth0`. It expects these secrets
 to be configured in the Render dashboard, never in `.env.local`:
 
 ```text
 MCP_PUBLIC_URL
 AUTH0_DOMAIN
 AUTH0_AUDIENCE
-DATABASE_URL
 POLAR_CLIENT_ID
 POLAR_CLIENT_SECRET
 POLAR_REDIRECT_URI
 ```
 
 In this mode the public `/mcp` endpoint verifies an Auth0 token before it can
-read any Polar data. PostgreSQL stores each user's Polar access and refresh
-tokens. No OpenAI Secure MCP Tunnel is involved.
+read any Polar data. `DATABASE_URL` is an optional additional Render variable:
+when set, PostgreSQL stores
+each user's Polar access and refresh tokens. Without it, the server uses an
+in-memory store; tokens and usage metrics are lost on a restart or redeploy, so
+users authorize Polar again. No OpenAI Secure MCP Tunnel is involved.
 
 ## Shared code
 
@@ -87,12 +89,13 @@ Other relevant files:
 
 | File | Responsibility |
 | --- | --- |
-| `src/polar_mcp/polar_mcp_oauth.py` | Polar authorization URLs, token exchange/refresh, SQLite and PostgreSQL credential stores |
+| `src/polar_mcp/polar_mcp_oauth.py` | Polar authorization URLs, token exchange/refresh, SQLite, in-memory, and PostgreSQL credential stores |
 | `src/polar_mcp/polar_mcp_auth.py` | Auth0 token verification; used only by hosted mode |
 | `src/polar_mcp/polar_service.py` | Requests and normalizes activity data from Polar |
 | `Dockerfile`, `render.yaml` | Hosted Render deployment only |
 
-Hosted mode also records aggregate `get_activities` usage in PostgreSQL. The
+Hosted mode also records aggregate `get_activities` usage in its active store.
+Without PostgreSQL, those metrics reset with the server. The
 `get_server_metrics` tool is available only to an Auth0 user with the
 `polar-mcp-admin` role; see the **Hosted admin metrics** section in the README
 for the one-time Auth0 Action and role setup.

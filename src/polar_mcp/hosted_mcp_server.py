@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the public, Auth0-protected Polar MCP server for Render.
 
-This entry point always enables Auth0 verification and requires Render's
-PostgreSQL database. It is the only MCP entry point used by the Docker image.
+This entry point always enables Auth0 verification. It uses PostgreSQL when
+DATABASE_URL is set, otherwise an in-memory credential store. It is the only
+MCP entry point used by the Docker image.
 """
 
 from __future__ import annotations
