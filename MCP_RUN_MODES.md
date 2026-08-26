@@ -37,7 +37,7 @@ MCP Tunnel. Keep that command running (for example in tmux). It is the only
 mode that needs `OPENAI_API_KEY` and `POLAR_MCP_TUNNEL_ID`.
 
 Polar's browser callback still needs a temporary public HTTPS address because
-Polar must redirect the browser back to your laptop. Start the callback-only
+Polar must redirect the browser back to your Linux machine. Start the callback-only
 Cloudflare tunnel separately when reconnecting a Polar account:
 
 ```bash
@@ -78,8 +78,8 @@ users authorize Polar again. No OpenAI Secure MCP Tunnel is involved.
 ## Shared code
 
 `src/polar_mcp/polar_mcp_server.py` is deliberately not a launch target in normal use. It
-contains the shared `get_activities` MCP tool and the Polar OAuth callback
-routes used by both modes.
+contains the shared `get_activities` and `get_exercise_calories` MCP tools and
+the Polar OAuth callback routes used by both modes.
 
 `src/polar_mcp/local_mcp_server.py` defaults to stdio when it is launched directly, which is
 useful for the MCP Inspector or a local MCP host. The `scripts/start_local_mcp.sh` and
@@ -94,7 +94,7 @@ Other relevant files:
 | `src/polar_mcp/polar_service.py` | Requests and normalizes activity data from Polar |
 | `Dockerfile`, `render.yaml` | Hosted Render deployment only |
 
-Hosted mode also records aggregate `get_activities` usage in its active store.
+Hosted mode also records aggregate activity-tool usage in its active store.
 Without PostgreSQL, those metrics reset with the server. The
 `get_server_metrics` tool is available only to an Auth0 user with the
 `polar-mcp-admin` role; see the **Hosted admin metrics** section in the README

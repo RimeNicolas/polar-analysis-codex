@@ -27,7 +27,7 @@ from .polar_mcp_oauth import (
     exchange_token,
     get_valid_polar_access_token,
 )
-from .polar_service import get_activities_for_token
+from .polar_service import exercise_calorie_summary, get_activities_for_token
 
 
 def public_auth_enabled() -> bool:
@@ -43,7 +43,7 @@ def mcp_auth_options() -> dict[str, Any]:
 
 mcp = MCPServer(
     "Polar Activities",
-    instructions="This server is read-only. Use get_activities for a date range. If Polar is not connected, ask the user to open the returned authorization_url.",
+    instructions="This server is read-only. Use get_activities for session data or get_exercise_calories for daily exercise-calorie totals. If Polar is not connected, ask the user to open the returned authorization_url.",
     **mcp_auth_options(),
 )
 
@@ -106,6 +106,32 @@ def get_activities(
     except PolarOAuthError as error:
         return {"error": "polar_authorization_error", "message": str(error)}
     return get_activities_for_token(from_date, to_date, token, features)
+
+
+@mcp.tool()
+def get_exercise_calories(from_date: str, to_date: str) -> dict[str, Any]:
+    """Summarize Polar exercise calories for an inclusive YYYY-MM-DD date range.
+
+    Returns total exercise calories plus daily, per-sport, and daily-per-sport
+    totals. It uses recorded Polar training sessions only, not basal metabolism
+    or complete daily energy expenditure.
+    """
+    try:
+        user_id = get_current_user_id()
+    except MCPAuthenticationError as error:
+        return {"error": "mcp_authentication_error", "message": str(error)}
+    try:
+        config, store = oauth_dependencies()
+        store.record_activity_request(user_id)
+        token = get_valid_polar_access_token(user_id, config, store)
+    except PolarNotConnectedError:
+        return authorization_required_response(user_id)
+    except PolarOAuthError as error:
+        return {"error": "polar_authorization_error", "message": str(error)}
+    try:
+        return exercise_calorie_summary(get_activities_for_token(from_date, to_date, token, features=[]))
+    except ValueError as error:
+        return {"error": "invalid_date_range", "message": str(error)}
 
 
 @mcp.tool()

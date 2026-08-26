@@ -67,6 +67,25 @@ class PolarExportTests(unittest.TestCase):
         self.assertEqual(result["activities"][0]["sport_type"], "Cycling")
         self.assertEqual(result["features"], [])
 
+    def test_exercise_calorie_summary_groups_by_day_and_sport(self):
+        summary = polar_service.exercise_calorie_summary(
+            {
+                "from_date": "2026-08-24",
+                "to_date": "2026-08-25",
+                "activity_count": 3,
+                "activities": [
+                    {"date": "2026-08-24", "sport_type": "Cycling", "calories": "850"},
+                    {"date": "2026-08-24", "sport_type": "Running", "calories": "420"},
+                    {"date": "2026-08-25", "sport_type": "Cycling", "calories": ""},
+                ],
+            }
+        )
+        self.assertEqual(summary["total_exercise_calories"], 1270)
+        self.assertEqual(summary["sessions_with_calories"], 2)
+        self.assertEqual(summary["sessions_without_calories"], 1)
+        self.assertEqual(summary["daily_totals"], [{"date": "2026-08-24", "activity_count": 2, "calories": 1270}])
+        self.assertEqual(summary["sport_totals"], [{"sport_type": "Cycling", "activity_count": 1, "calories": 850}, {"sport_type": "Running", "activity_count": 1, "calories": 420}])
+
     @patch("polar_mcp.polar_account.requests.get")
     def test_account_request_uses_bearer_token_without_query_credentials(self, get: Mock):
         response = Mock()

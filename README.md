@@ -11,6 +11,56 @@ The repository also includes a local command-line CSV exporter for loading activ
 
 Start with [MCP_RUN_MODES.md](MCP_RUN_MODES.md) to choose between the local and hosted setup.
 
+## Portfolio use case
+
+This project demonstrates a complete, privacy-conscious integration rather
+than only a CSV export:
+
+> A secure, multi-user MCP service that lets an AI client retrieve a person's
+> Polar activity data through OAuth, without exposing Polar tokens to the
+> client.
+
+It demonstrates practical API integration, OAuth, MCP tools, Auth0
+authorization, hosted deployment, automated tests, and explicit privacy and
+cost trade-offs. The hosted service is read-only and supports either persistent
+PostgreSQL storage or a no-cost in-memory mode that discards tokens on restart.
+
+### Example user journey
+
+1. A user signs in to the MCP service through Auth0, for example with Google.
+2. On their first activity request, they authorize their own Polar account.
+3. The AI client retrieves normalized Polar sessions through `get_activities`.
+4. `get_exercise_calories` groups exercise calories by day and sport, ready to
+   compare with food calories logged in a ChatGPT Nutrition project.
+
+The current Polar `calories` field measures calories burned in recorded
+activities. It does not represent complete daily energy expenditure, which also
+includes basal metabolism and ordinary non-exercise movement.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Client["ChatGPT, Claude, or another MCP client"]
+    Auth0["Auth0\nOAuth sign-in and roles"]
+    MCP["Polar Analysis MCP\nRender /mcp"]
+    Polar["Polar Flow\nOAuth and AccessLink API"]
+    Storage{"DATABASE_URL configured?"}
+    Postgres[("PostgreSQL\npersistent per-user tokens and metrics")]
+    Memory["In-memory store\ntokens and metrics lost on restart"]
+
+    Client -->|"sign in"| Auth0
+    Auth0 -->|"access token"| Client
+    Client -->|"authenticated MCP request"| MCP
+    MCP -->|"Polar authorization URL"| Client
+    Client -->|"browser approval"| Polar
+    Polar -->|"callback code"| MCP
+    MCP -->|"read-only activities and token refresh"| Polar
+    MCP --> Storage
+    Storage -->|"yes"| Postgres
+    Storage -->|"no"| Memory
+```
+
 ## Project layout
 
 ```text
@@ -116,15 +166,36 @@ The AccessLink OAuth token must include the `training_sessions:read` scope. If t
 
 ## MCP server
 
-The MCP server provides one read-only tool,
-`get_activities(from_date, to_date, features=None)`, returning activity rows as
-structured data instead of writing a CSV. It can run locally through the
-private OpenAI Secure MCP Tunnel, or as an Auth0-protected service on Render.
-The hosted server additionally offers the Auth0-admin-only
-`get_server_metrics(from_date, to_date)` tool.
+The MCP server is read-only and provides these tools:
+
+* `get_activities(from_date, to_date, features=None)` returns normalized Polar
+  activity rows as structured data instead of writing a CSV.
+* `get_exercise_calories(from_date, to_date)` returns total exercise calories,
+  plus daily, per-sport, and daily-per-sport totals. It uses summary-only Polar
+  session data, so it can request up to 90 days at a time.
+* `get_server_metrics(from_date, to_date)` is available only on the hosted
+  service to an Auth0 administrator.
+
+The server can run locally through the private OpenAI Secure MCP Tunnel, or as
+an Auth0-protected service on Render.
 
 See [MCP_RUN_MODES.md](MCP_RUN_MODES.md) first: it shows exactly which command
 and configuration belong to local versus hosted use.
+
+### Nutrition-project workflow
+
+In a ChatGPT conversation inside the Nutrition project, select the Polar MCP
+app for the message and ask, for example:
+
+```text
+Retrieve my Polar exercise calories for 2026-08-25. Compare them with the food
+calories I logged for that day, and state clearly that the Polar value covers
+recorded exercise rather than my full daily energy expenditure.
+```
+
+The MCP returns only Polar exercise data. ChatGPT combines it with the food log
+available in the Nutrition project; it does not send the food log to the Polar
+server.
 
 ### Choose how to use it with ChatGPT
 
@@ -200,8 +271,9 @@ After deploying the metrics version, `get_server_metrics(from_date, to_date)`
 is available from ChatGPT only to users assigned the Auth0 role
 `polar-mcp-admin`. It reports inclusive UTC-date totals:
 
-* `activity_requests`: authenticated calls to `get_activities`, including a
-  first call that prompts the user to connect Polar.
+* `activity_requests`: authenticated calls to `get_activities` or
+  `get_exercise_calories`, including a first call that prompts the user to
+  connect Polar.
 * `unique_requesting_users`: distinct Auth0 users making those calls.
 * `new_polar_connections`: users who completed a first Polar connection in the
   selected period.
