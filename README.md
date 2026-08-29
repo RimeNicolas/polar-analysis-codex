@@ -1,415 +1,263 @@
 # Polar Analysis MCP
 
-Polar Analysis MCP is a read-only [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) service for querying Polar Flow activities from ChatGPT or another MCP client. It connects each user to Polar through OAuth, retrieves their training sessions through Polar AccessLink, and returns structured activity data to the client.
+## What this project does
 
-It supports two ways to run the same service:
+AI models cannot normally access data stored in services such as Polar Flow. The Model Context Protocol (MCP) provides a standard way to connect an AI application to external tools and data sources.
 
-* **Hosted:** an Auth0-protected MCP endpoint on Render. It uses PostgreSQL when configured, or an ephemeral in-memory token store at no database cost.
-* **Local:** a private server on this Linux machine, optionally connected to ChatGPT through the OpenAI Secure MCP Tunnel; Polar tokens remain on the machine.
+This project provides a read-only MCP server for Polar Flow. After a user authorizes their Polar account, an AI client can ask the server for training activities in a date range. The server retrieves the data from Polar and returns it as structured information that the AI can understand and analyse.
 
-All Polar operations are read-only: the service never changes or removes data in Polar Flow.
+For example, a user can ask an MCP-compatible AI client:
 
-Start with [MCP_RUN_MODES.md](MCP_RUN_MODES.md) to choose between the local and hosted setup.
+> Retrieve my Polar activities from last week and summarize my training.
 
-## Portfolio use case
+The server can be connected to ChatGPT or any other MCP client that supports the server's transport and authentication method.
 
-This project demonstrates a complete, privacy-conscious integration:
+## Technical overview
 
-> A secure, multi-user MCP service that lets an AI client retrieve a person's
-> Polar activity data through OAuth, without exposing Polar tokens to the
-> client.
+Polar Analysis MCP connects three components:
 
-It demonstrates practical API integration, OAuth, MCP tools, Auth0
-authorization, hosted deployment, automated tests, and explicit privacy and
-cost trade-offs. The hosted service is read-only and supports either persistent
-PostgreSQL storage or a no-cost in-memory mode that discards tokens on restart.
-
-### Example user journey
-
-1. A user signs in to the MCP service through Auth0, for example with Google.
-2. On their first activity request, they authorize their own Polar account.
-3. The AI client retrieves normalized Polar sessions through `get_activities`.
-4. An administrator with the Auth0 `polar-mcp-admin` role can retrieve aggregate
-   server metrics without seeing user identities, Polar tokens, or activity data.
-
-The current Polar `calories` field measures calories burned in recorded
-activities. It does not represent complete daily energy expenditure, which also
-includes basal metabolism and ordinary non-exercise movement.
-
-## Architecture
+1. An MCP client, such as ChatGPT or another AI application.
+2. This MCP server, which handles authentication and exposes Polar tools.
+3. Polar AccessLink, which provides the user's activity data.
 
 ```mermaid
 flowchart LR
-    Client["ChatGPT, Claude, or another MCP client"]
-    Auth0["Auth0\nOAuth sign-in and roles"]
-    MCP["Polar Analysis MCP\nRender /mcp"]
-    Polar["Polar Flow\nOAuth and AccessLink API"]
-    Storage{"DATABASE_URL configured?"}
-    Postgres[("PostgreSQL\npersistent per-user tokens and metrics")]
-    Memory["In-memory store\ntokens and metrics lost on restart"]
+    Client["MCP client\nChatGPT or another AI"]
+    Server["Polar Analysis MCP"]
+    Polar["Polar AccessLink API"]
+    Store[("Credential store")]
 
-    Client -->|"sign in"| Auth0
-    Auth0 -->|"access token"| Client
-    Client -->|"authenticated MCP request"| MCP
-    MCP -->|"Polar authorization URL"| Client
-    Client -->|"browser approval"| Polar
-    Polar -->|"callback code"| MCP
-    MCP -->|"read-only activities and token refresh"| Polar
-    MCP --> Storage
-    Storage -->|"yes"| Postgres
-    Storage -->|"no"| Memory
+    Client -->|"MCP request"| Server
+    Server -->|"Read activities"| Polar
+    Polar -->|"Activity data"| Server
+    Server --> Store
 ```
 
-## Project layout
+The main MCP tool is:
 
 ```text
-src/polar_mcp/  Python package: exporter, Polar OAuth, MCP tools, and server entry points
-scripts/        Bash commands for local exports, local MCP, tunnel, and callback tunnel
-tests/          Automated Python tests
-Dockerfile      Hosted Render container configuration
-render.yaml     Hosted Render service configuration
+get_activities(from_date, to_date, features=None)
 ```
 
-Install the local package once inside the virtual environment before using a
-`python -m polar_mcp...` command:
+It returns normalized Polar training sessions, including fields such as date, sport, duration, distance, heart rate, speed, power, and the additional data returned by Polar.
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt -e .
-```
+All Polar operations are read-only. The server does not create, update, or delete data in Polar Flow.
 
-## Local CSV exporter: one-time Polar authorization
+## Authentication model
 
-The first export can guide you through authorization automatically. Before doing it, register `http://localhost:8080/callback` as a redirect URL for your client in [Polar AccessLink Admin](https://admin.polaraccesslink.com/). Then run:
+The project uses two separate OAuth relationships:
 
-```bash
-python -m polar_mcp.polar_oauth setup
-```
+- **MCP authentication** identifies the user connecting through the AI client.
+- **Polar OAuth** allows the server to access that user's Polar account.
 
-It prompts once for your client ID and client secret, opens Polar in your browser, captures the approval callback, and saves its credentials and refresh token outside the project in `~/.config/polar-csv-exporter/`, with owner-only file permissions. Do not put that directory in Git or share it.
+In hosted mode, the MCP server verifies the user's access token and uses the verified issuer and subject as the user's internal identifier. Polar access and refresh tokens are stored against that identifier. This prevents one authenticated user from retrieving another user's Polar activities.
 
-The files are readable YAML:
+Polar tokens remain on the server. They are never accepted as MCP tool arguments and are never returned to the AI client.
 
-* `credentials.yml` holds your client ID, client secret, and callback address.
-* `tokens.yml` holds the current access token, refresh token, expiry, and granted scope.
+## Running modes
 
-You enter the client credentials only during setup. The access token lasts 12 hours; later exports use the saved refresh token to fetch a replacement automatically.
+The same MCP service can run locally or on a generic hosting platform.
 
-After that, simply run an export. The exporter refreshes its 12-hour access token automatically; no authorization code or token copying is needed. It asks Polar for `training_sessions:read`, `sports:read`, and `profile:read`. The first two support session exports and sport-name mapping; `profile:read` supports the optional account export below. Polar's catalogue can be empty for some accounts, so the exporter also recognizes Polar's Cycling sport ID directly. If access is revoked or your authorization predates these scopes, run `python -m polar_mcp.polar_oauth reauthorize`.
+| Mode | Intended use | MCP authentication | Credential storage |
+| --- | --- | --- | --- |
+| Local | Personal use and development | Single development identity | Local SQLite database |
+| Hosted | Multi-user remote MCP service | Auth0 OAuth access tokens | PostgreSQL or in-memory storage |
 
-## Export Polar account data
+## Prerequisites
 
-Retrieve the authorized user's Polar account profile and save it as owner-readable JSON (`0600` permissions where supported):
+For both modes:
 
-```bash
-python -m polar_mcp.polar_account
-```
+- Python 3.10 or newer.
+- A Polar AccessLink application with a client ID and client secret.
+- An MCP-compatible client.
 
-The default output is `exports/polar_account.json`. It can contain sensitive personal information, including name, email, birthdate, height, weight, training background, heart-rate thresholds, contact details, and consent records. Do not commit or share it. To select another destination:
+Create the Polar application in the [Polar AccessLink administration interface](https://admin.polaraccesslink.com/). Register the exact HTTPS callback URL used by the selected running mode. Polar redirects the user's browser to this URL after authorization.
 
-```bash
-python -m polar_mcp.polar_account --output /private/path/polar_account.json
-```
+Hosted mode additionally requires:
 
-If your existing OAuth grant predates the `profile:read` scope, run `python -m polar_mcp.polar_oauth reauthorize` once and approve access. The exporter never writes the access token or client credentials into the account JSON and does not print them.
+- A public HTTPS domain for the MCP server.
+- An Auth0 tenant configured as the MCP authorization server.
+- A hosting platform capable of running the included Docker container.
+- Optionally, PostgreSQL for persistent credentials and metrics.
 
-## Manual-token setup (optional)
+### Local mode
 
-Create a virtual environment and install the only dependency:
+Local mode runs the MCP server on the user's own machine. It can be used directly by a local MCP client through standard input/output, or through Streamable HTTP on localhost.
+
+Install the project:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt -e .
+cp .env.local.example .env.local
 ```
 
-You can also supply an active Polar OAuth access token manually. This is useful for testing, but the automated authorization above is more convenient.
-
-```bash
-export POLAR_ACCESS_TOKEN='your-token-here'
-```
-
-Alternatively, put only the token in a local file outside version control and use `--token-file /path/to/polar-token.txt`.
-
-## Export all activities
-
-```bash
-python -m polar_mcp.polar_export --from 2026-07-01 --to 2026-07-31
-```
-
-For the latest seven calendar days (today plus the preceding six days), use:
-
-```bash
-./scripts/export_last_7_days.sh
-```
-
-It writes a dated file such as `exports/polar_activities_260815-260821.csv`.
-
-The end date is inclusive. The exporter sends each boundary to Polar as midnight in ISO datetime form. The default output is `exports/polar_activities.csv`, encoded as UTF-8 with a BOM so Excel recognizes accented characters. Open the file directly in Excel or use **Data → From Text/CSV**.
-
-The first CSV columns are `date`, `sport_type`, `duration`, `distance` (km), `avg_speed`, `calories`, `avg_hr`, and `avg_power`; every other field returned by Polar follows. `avg_speed` and `avg_power` are Polar's raw statistics values, without unit conversion.
-
-By default the exporter asks for useful optional details (`statistics`, `zones`, `laps`, `pause-times`, and `comments`). Polar allows optional features only one day at a time; the exporter automatically splits a larger range into day requests. Nested objects become dotted CSV columns, while arrays remain compact JSON in one cell.
-
-Useful variants:
-
-```bash
-# Summary fields only; up to 90 days per API request
-python -m polar_mcp.polar_export --from 2026-01-01 --to 2026-03-31 --features ''
-
-# Choose the CSV path
-python -m polar_mcp.polar_export --from 2026-08-01 --to 2026-08-15 --output ~/Downloads/august-activities.csv
-```
-
-The AccessLink OAuth token must include the `training_sessions:read` scope. If the API reports `401`, obtain a fresh token through your Polar application’s authorization flow.
-
-## MCP server
-
-The MCP server is read-only and provides these tools:
-
-* `get_activities(from_date, to_date, features=None)` returns normalized Polar
-  activity rows as structured data instead of writing a CSV.
-* `get_exercise_calories(from_date, to_date)` returns total exercise calories,
-  plus daily, per-sport, and daily-per-sport totals. It uses summary-only Polar
-  session data, so it can request up to 90 days at a time.
-* `get_server_metrics(from_date, to_date)` is available only on the hosted
-  service to an Auth0 administrator.
-
-The server can run locally through the private OpenAI Secure MCP Tunnel, or as
-an Auth0-protected service on Render.
-
-See [MCP_RUN_MODES.md](MCP_RUN_MODES.md) first: it shows exactly which command
-and configuration belong to local versus hosted use.
-
-### Nutrition-project workflow
-
-In a ChatGPT conversation inside the Nutrition project, select the Polar MCP
-app for the message and ask, for example:
-
-```text
-Retrieve my Polar exercise calories for 2026-08-25. Compare them with the food
-calories I logged for that day, and state clearly that the Polar value covers
-recorded exercise rather than my full daily energy expenditure.
-```
-
-The MCP returns only Polar exercise data. ChatGPT combines it with the food log
-available in the Nutrition project; it does not send the food log to the Polar
-server.
-
-### Choose how to use it with ChatGPT
-
-Choose **one** of these paths. They use the same Polar tool but different
-servers and token stores.
-
-#### Option A — run it from this Linux machine
-
-Use this for private development or to keep Polar credentials on the machine.
-
-1. Install dependencies once:
-
-   ```bash
-   python3 -m venv .venv
-   .venv/bin/python -m pip install -r requirements.txt -e .
-   cp .env.local.example .env.local
-   ```
-
-2. Edit `.env.local` with your Polar credentials, OpenAI runtime key, and
-   `POLAR_MCP_TUNNEL_ID`. This file is ignored by Git.
-3. Start the local server and private ChatGPT tunnel:
-
-   ```bash
-   cd ~/Documents/ChatGPT/polar-analysis-codex
-   ./scripts/start_local_mcp_tunnel.sh
-   ```
-
-4. Keep that command running. ChatGPT reaches your machine through the private
-   OpenAI Secure MCP Tunnel. The local server stores Polar tokens in
-   `~/.local/share/polar-mcp/credentials.sqlite3`.
-
-For the first Polar connection (or after revoking it), start the separate
-callback tunnel with `./scripts/start_polar_oauth_tunnel.sh`, update
-`POLAR_REDIRECT_URI` in `.env.local` and Polar AccessLink Admin with the new
-callback URL, then authorize Polar in the browser. The callback tunnel is only
-needed during Polar authorization.
-
-#### Option B — use the hosted Render server
-
-Use this when ChatGPT should connect directly to the hosted service. Nothing
-needs to run on the Linux machine in normal day-to-day use.
-
-1. Create a Render Web Service from this repository. A Render PostgreSQL
-   database is optional.
-2. In Render, set `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
-   `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and
-   `POLAR_REDIRECT_URI`.
-3. In Auth0, create the `polar:activities:read` API permission, configure
-   default third-party user access for that permission, enable DCR and the
-   Resource Parameter Compatibility Profile, and promote the desired login
-   connection to domain level.
-4. In ChatGPT Developer Mode, create or update the app to use:
-
-   ```text
-   https://polar-mcp-xxx.onrender.com/mcp
-   ```
-
-5. Let ChatGPT complete the Auth0 sign-in. On the first activity request,
-   follow the Polar authorization link and approve access.
-
-Render runs `python -m polar_mcp.hosted_mcp_server` and verifies Auth0 tokens.
-If `DATABASE_URL` is set, each user's Polar access and refresh tokens are stored
-in PostgreSQL. If it is absent, they remain only in the running Render process:
-users must reconnect Polar after a restart, redeploy, or Render free-tier
-spin-down. The in-memory option has no database cost and does not write tokens
-to the container filesystem. The hosted service does not use the OpenAI Secure
-MCP Tunnel. After a code change, push it to GitHub and allow Render to deploy
-the new commit.
-
-### Hosted admin metrics
-
-After deploying the metrics version, `get_server_metrics(from_date, to_date)`
-is available from ChatGPT only to users assigned the Auth0 role
-`polar-mcp-admin`. It reports inclusive UTC-date totals:
-
-* `activity_requests`: authenticated calls to `get_activities` or
-  `get_exercise_calories`, including a first call that prompts the user to
-  connect Polar.
-* `unique_requesting_users`: distinct Auth0 users making those calls.
-* `new_polar_connections`: users who completed a first Polar connection in the
-  selected period.
-* `total_polar_connected_users`: all users with stored Polar credentials.
-
-No names, email addresses, activity data, or tokens are returned. Activity
-request counts begin only after this version is deployed; connection totals can
-include Polar accounts stored since the current server process started when
-running without PostgreSQL.
-
-#### One-time Auth0 admin setup
-
-1. In **User Management → Roles**, create a role named `polar-mcp-admin`.
-2. Open your own user in **User Management → Users → Roles** and assign that
-   role.
-3. In **Actions → Flows → Login**, create and add a **Post Login** Action with:
-
-   ```javascript
-   exports.onExecutePostLogin = async (event, api) => {
-     if (event.authorization) {
-       api.accessToken.setCustomClaim(
-         'https://polar-mcp-xxx.onrender.com/roles',
-         event.authorization.roles
-       );
-     }
-   };
-   ```
-
-4. Disconnect and reconnect the ChatGPT app, so it receives a new Auth0 access
-   token containing the role. Then ask ChatGPT, for example:
-
-   ```text
-   Use Polar Activities to show server metrics from 2026-08-01 to 2026-08-31.
-   ```
-
-If you use another public MCP URL later, replace the URL in the Action with
-that exact `MCP_PUBLIC_URL` followed by `/roles`. You can instead configure
-`AUTH0_ROLES_CLAIM` and `AUTH0_ADMIN_ROLE` as non-secret Render environment
-variables when you need different names.
-
-Install the dependencies first, then use the MCP Inspector for local testing:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-   python -m pip install -r requirements.txt -e .
-   python -m polar_mcp.local_mcp_server --transport stdio
-```
-
-The server uses standard input/output by default, so a local MCP-capable host can launch it as a child process. A portable launch command is:
-
-```bash
-python -m polar_mcp.local_mcp_server --transport stdio
-```
-
-### Local-only Polar OAuth connection
-
-The MCP server now uses a separate, server-side Polar OAuth store. It never accepts a Polar token as a tool parameter and never returns a token. Its SQLite database is outside the repository by default at `~/.local/share/polar-mcp/credentials.sqlite3`, with owner-only permissions. It has separate rows per application user, so it can later move to a hosted database without changing the tool code.
-
-Create the ignored `.env.local` file from `.env.local.example`, then set your
-Polar app credentials and the exact temporary public callback URL:
-
-```bash
-POLAR_CLIENT_ID=your-polar-client-id
-POLAR_CLIENT_SECRET=your-polar-client-secret
-POLAR_REDIRECT_URI=https://your-public-oauth-host.example/polar/callback
-POLAR_DEV_USER_ID=development-user
-```
-
-Register that exact `POLAR_REDIRECT_URI` in [Polar AccessLink Admin](https://admin.polaraccesslink.com/). Start the local MCP server, then ask the MCP client to call `get_activities`. Before Polar is connected, the result includes a safe `authorization_url`. Open it in a browser, approve Polar, and return to the client. Later calls use the stored refresh token automatically.
-
-`POLAR_DEV_USER_ID` is deliberately a development-only identity seam: all calls from this local development instance identify as that value. The database and OAuth state are per user, but a real multi-user deployment must replace `get_current_user_id()` with verified MCP/app identity before serving more than one person.
-
-### Local ChatGPT connection
-
-ChatGPT cannot connect directly to a local stdio server. For the ChatGPT Secure MCP Tunnel route, run this server in Streamable HTTP mode, bound only to your computer:
+Configure the Polar application values in `.env.local`, then start the server:
 
 ```bash
 ./scripts/start_local_mcp.sh
 ```
 
-The MCP endpoint is `http://127.0.0.1:8000/mcp`. Keep this terminal running, then use ChatGPT's Secure MCP Tunnel flow to make the local endpoint available to ChatGPT without exposing it publicly. Do not use `--host 0.0.0.0` or a public tunnel for this personal-health-data server.
+The Streamable HTTP endpoint is:
 
-### Hosted Render + Auth0 setup
+```text
+http://127.0.0.1:8000/mcp
+```
 
-The local setup is single-user development only. For a public server, set `MCP_AUTH_MODE=auth0`; each MCP request must then have an Auth0 access token containing the `polar:activities:read` scope. The server verifies its issuer, audience, expiry, signature, and scope before it retrieves any Polar data. The verified Auth0 issuer and `sub` claim become the per-user credential key.
+For a local MCP client that supports stdio:
 
-Deploy using the included `Dockerfile` and `render.yaml`. Set these Render
-secrets: `MCP_PUBLIC_URL`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`,
-`POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET`, and `POLAR_REDIRECT_URI`. Use the
-stable public URL for both `MCP_PUBLIC_URL` and `AUTH0_AUDIENCE`; set Polar's
-callback to `https://your-host/polar/callback`.
+```bash
+python -m polar_mcp.local_mcp_server --transport stdio
+```
 
-`DATABASE_URL` is optional. If set, the server uses PostgreSQL and retains each
-user's Polar credentials and usage metrics. If omitted, it uses memory only:
-credentials and metrics are discarded whenever Render restarts or redeploys,
-and users must authorize Polar again.
+The first Polar authorization requires the HTTP server and callback route described below. After credentials have been stored in SQLite, the stdio entry point can reuse them.
 
-Auth0 must be configured as an OAuth 2.1 authorization server for the ChatGPT MCP client. In its API settings, create the `polar:activities:read` permission and use your MCP public URL as the API identifier/audience. Enable Dynamic Client Registration (DCR), set `polar:activities:read` as the default user-delegated permission for third-party apps, enable the Resource Parameter Compatibility Profile, and promote the selected login connection to domain level. The MCP SDK exposes the required protected-resource metadata at `/.well-known/oauth-protected-resource` when public mode is enabled. Do not deploy until these values and the OAuth flow have been tested end to end.
+To connect a private local server to ChatGPT, the project also includes a launcher for the OpenAI Secure MCP Tunnel:
 
-Polar sends its browser callback to a public HTTPS URL, which the Secure MCP Tunnel does not provide. To keep `/mcp` private, use the included callback-only proxy on a second localhost port:
+```bash
+./scripts/start_local_mcp_tunnel.sh
+```
+
+Local Polar credentials are stored outside the repository in:
+
+```text
+~/.local/share/polar-mcp/credentials.sqlite3
+```
+
+Local mode is intentionally single-user and binds Streamable HTTP only to localhost. It must not be exposed as a public multi-user service.
+
+#### Local Polar authorization callback
+
+Polar requires a public HTTPS callback even when the MCP server runs locally. The repository includes a callback-only proxy that forwards `/polar/login` and `/polar/callback` to the local server without exposing `/mcp`:
 
 ```bash
 ./scripts/start_polar_oauth_callback_proxy.sh
 ```
 
-Point a separate public HTTPS reverse tunnel **only** at `http://127.0.0.1:8081`, and use its `https://.../polar/callback` URL for `POLAR_REDIRECT_URI`. That proxy allows only `/polar/login` and `/polar/callback`; `/mcp` is not routed through it. Do not point a public tunnel directly at port 8000. The choice and setup of the HTTPS reverse-tunnel provider is intentionally left to you; the OpenAI Secure MCP Tunnel remains dedicated to the private MCP connection.
+Expose only `http://127.0.0.1:8081` through an HTTPS reverse tunnel. Set `POLAR_REDIRECT_URI` in `.env.local` to the resulting public URL followed by `/polar/callback`, and register that exact URL with Polar.
 
-For a temporary development callback URL, run the downloaded Cloudflare `cloudflared` client through the included launcher:
+An optional launcher for a temporary Cloudflare Quick Tunnel is included:
 
 ```bash
 ./scripts/start_polar_oauth_tunnel.sh
 ```
 
-It prints a temporary `https://...trycloudflare.com` address. Set `POLAR_REDIRECT_URI` to that address plus `/polar/callback`, then register the exact value with Polar. A Quick Tunnel URL changes when the command stops; update `.env.local` and Polar's redirect setting before the next OAuth login. For a permanent address, configure a named Cloudflare Tunnel with a domain you control.
+This launcher expects the `cloudflared` executable at `tools/bin/cloudflared`. A different reverse-tunnel provider can be used as long as it exposes only the callback proxy.
 
-### Use tmux during authorization
+### Hosted mode
 
-Cloudflare Quick Tunnel URLs change each time they start, so use a first tmux session to start the OAuth callback tunnel, then update `POLAR_REDIRECT_URI` and Polar AccessLink Admin before starting the MCP tunnel in a second session:
+Hosted mode runs the server as a public HTTPS MCP service. It can be deployed as a Docker container on any platform that supports a long-running web service and environment variables.
 
-```bash
-tmux new -s polar-oauth
-./scripts/start_polar_oauth_tunnel.sh
-# Copy the URL, update configuration, then detach with Ctrl-b followed by d.
-
-tmux new -s polar-mcp
-./scripts/start_local_mcp_tunnel.sh
-```
-
-Once Polar is connected, only `polar-mcp` is needed for normal activity queries. `POLAR_MCP_TUNNEL_ID` can be stored privately in `.env.local`, so `./scripts/start_local_mcp_tunnel.sh` needs no argument. Detach with `Ctrl-b`, then `d`; rejoin with `tmux attach -t polar-mcp`; stop it with `tmux kill-session -t polar-mcp`.
-
-### Private ChatGPT tunnel
-
-After installing OpenAI's `tunnel-client` in `tools/bin/`, create a tunnel in [OpenAI Platform](https://platform.openai.com/settings/organization/tunnels), then run:
+Build the container:
 
 ```bash
-./scripts/start_local_mcp_tunnel.sh tunnel_YOUR_ID
+docker build -t polar-analysis-mcp .
 ```
 
-The launcher starts the Polar server on localhost, creates a local tunnel-client profile, checks it, and keeps the tunnel in the foreground. It reads the runtime OpenAI key only from the ignored `.env.local` file. Keep this command running while using the private developer-mode plugin in ChatGPT; no inbound port is opened and no Polar credential is exposed.
+The container starts:
+
+```bash
+python -m polar_mcp.hosted_mcp_server
+```
+
+The MCP client connects to:
+
+```text
+https://your-domain.example/mcp
+```
+
+Hosted mode requires Auth0 configuration so every MCP request has a verified user identity and the required `polar:activities:read` scope.
+
+At a minimum, the Auth0 configuration must:
+
+1. Define an API whose identifier matches `AUTH0_AUDIENCE`.
+2. Add the `polar:activities:read` permission.
+3. Allow the MCP client to request that permission.
+4. Support OAuth authorization-code flow with PKCE.
+5. Support MCP client registration, such as Dynamic Client Registration.
+6. Preserve the MCP `resource` parameter so the issued token has the correct audience.
+7. Enable at least one user login connection.
+
+The MCP server publishes protected-resource metadata and validates Auth0 token signature, issuer, audience, expiry, and scope.
+
+Required environment variables:
+
+```text
+MCP_PUBLIC_URL
+AUTH0_DOMAIN
+AUTH0_AUDIENCE
+POLAR_CLIENT_ID
+POLAR_CLIENT_SECRET
+POLAR_REDIRECT_URI
+```
+
+Optional environment variable:
+
+```text
+DATABASE_URL
+```
+
+When `DATABASE_URL` is configured, PostgreSQL persistently stores per-user Polar credentials and aggregate request metrics. Without it, the server uses an in-memory store and users must reconnect Polar after the process restarts.
+
+Configure these values through the hosting platform's secret manager. For local container testing, create the ignored `.env.local` file from the generic example, fill in the hosted values, and run:
+
+```bash
+cp .env.example .env.local
+docker run --rm -p 8000:8000 --env-file .env.local polar-analysis-mcp
+```
+
+The public Polar callback must be:
+
+```text
+https://your-domain.example/polar/callback
+```
+
+The same callback URL must be registered in the Polar AccessLink administration interface.
+
+## User flow
+
+1. The user connects an MCP client to the server.
+2. In hosted mode, the user authenticates through Auth0.
+3. The user asks the AI client for Polar activities.
+4. If no Polar account is connected, the MCP tool returns an authorization URL.
+5. The user opens that URL and approves access in Polar.
+6. The server stores the Polar credentials under the authenticated user identity.
+7. Later MCP requests automatically refresh the Polar access token when necessary.
+8. The requested activities are returned to the MCP client as structured data.
+
+## Project structure
+
+```text
+src/polar_mcp/
+    polar_mcp_server.py       Shared MCP tools and Polar OAuth routes
+    local_mcp_server.py       Local single-user entry point
+    hosted_mcp_server.py      Hosted Auth0-protected entry point
+    polar_mcp_auth.py         MCP access-token verification and roles
+    polar_mcp_oauth.py        Polar OAuth and credential stores
+    polar_service.py          Polar activity retrieval and normalization
+
+scripts/                      Local server and tunnel launchers
+tests/                        Automated tests
+Dockerfile                    Generic container entry point
+```
+
+## Security and privacy
+
+- Polar access is read-only.
+- Hosted requests require a valid OAuth access token.
+- The server verifies token signature, issuer, audience, expiration, and scope.
+- Each hosted user has a separate credential-store key.
+- Polar tokens are never returned to MCP clients.
+- OAuth state values are single-use and expire after a short period.
+- Administrative metrics are aggregated and do not expose identities, tokens, or activity data.
+- Secrets and generated credentials must not be committed to Git.
+
+## Development
+
+Install the test runner and run the existing automated tests with:
+
+```bash
+python -m pip install pytest
+python -m pytest
+```
